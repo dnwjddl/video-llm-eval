@@ -46,7 +46,17 @@ bash setup.sh
 3. LLaVA 계열용 `llava` 패키지 (LLaVA-NeXT) 설치
 4. Gemma 4 플러그인 (`gemma4_plugin/`) 설치
 
-> **팁**: LLaVA-NeXT는 의존성 버전 충돌이 잦습니다. 문제가 생기면 conda/venv 환경을 모델 계열별로 분리하는 것을 권장합니다 (예: `llava` 환경 / `qwen+gemma` 환경).
+> **⚠️ LLaVA 계열은 별도 환경이 필요합니다.** LLaVA-NeXT는 구버전 transformers(`apply_chunking_to_forward` 등 제거된 API)를 기대하는 반면 Gemma 4는 최신 transformers가 필요해서 **한 환경에 공존할 수 없습니다.** LLaVA 전용 환경을 이렇게 만드세요:
+>
+> ```bash
+> conda create -n llava python=3.10 -y
+> conda activate llava
+> pip install "git+https://github.com/LLaVA-VL/LLaVA-NeXT.git"
+> pip install "git+https://github.com/EvolvingLMMs-Lab/lmms-eval.git"
+> pip install "transformers==4.40.0" decord   # 반드시 마지막에 구버전으로 고정 (안 되면 4.45.2 시도)
+> ```
+>
+> 이후 `run_llava_onevision.sh`/`run_llava_video.sh`는 `llava` 환경에서, 나머지(Qwen/Gemma 4)는 기본 환경에서 실행하세요.
 
 ### HuggingFace 로그인
 
@@ -219,6 +229,7 @@ python -m lmms_eval --model vllm --model_args model=google/gemma-4-E4B-it --task
 |---|---|
 | `decord` 관련 에러 | `pip install decord` (Mac/ARM은 `eva-decord`) |
 | LLaVA 모델 로딩 실패 (`llava` import 에러) | `pip install git+https://github.com/LLaVA-VL/LLaVA-NeXT.git` 재설치 |
+| `cannot import name 'apply_chunking_to_forward'` | transformers가 너무 최신 — 위 1번 섹션대로 LLaVA 전용 환경에서 `transformers==4.40.0`으로 고정 |
 | 401/403 다운로드 에러 | `hf auth login` + 해당 HF 페이지에서 약관 동의 |
 | CUDA OOM | 위 6번 섹션의 프레임/해상도 축소 참고 |
 | flash-attn 빌드 실패 | 필수 아님. `attn_implementation`을 지정하지 않으면 sdpa로 동작 |
