@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gemma4-lmms"
+version = "0.1.0"
+description = "lmms-eval plugin: Gemma 4 (E2B/E4B) model wrapper"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.entry-points."lmms_eval.models"]
+gemma4 = "gemma4_lmms:MANIFEST"
+
+[tool.setuptools.packages.find]
+include = ["gemma4_lmms*"]
