@@ -31,7 +31,8 @@ COLORS = {
     "none": "#5F6368", "pool_avg": "#4285F4", "pool_max": "#8AB4F8",
     "random": "#B06000", "pca_select": "#EA4335", "pca_recon": "#C5221F",
     "tome": "#188038", "kmeans": "#5BB974", "temporal_pool": "#F29900",
-    "framediff": "#1967D2",
+    "framediff": "#1967D2", "scribe_tf": "#202124",
+    "shuffle": "#9AA0A6", "reverse": "#DADCE0",
 }
 INK, INK_MUTED, GRID = "#202124", "#5F6368", "#E8EAED"
 
