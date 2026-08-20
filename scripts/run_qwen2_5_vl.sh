@@ -8,8 +8,8 @@ source "$(dirname "$0")/common.sh"
 TASKS="${1:-$ALL_TASKS}"
 CKPT="${2:-Qwen/Qwen2.5-VL-7B-Instruct}"
 
-# max_pixels=602112: 40GB GPU 안전값 (여유 있는 GPU면 1605632로 올려도 됨)
-# 그래도 OOM 시 max_pixels=301056, max_num_frames=16으로 낮추세요
+# 빈 40GB GPU에서 동작 확인된 설정. OOM이 나면 먼저 nvidia-smi로 GPU를 다른
+# 작업과 공유하고 있지 않은지 확인하고, 그래도 나면 max_pixels=602112로 낮추세요
 run_eval qwen2_5_vl \
-  "pretrained=${CKPT},max_pixels=602112,max_num_frames=32" \
+  "pretrained=${CKPT},max_pixels=1605632,max_num_frames=32" \
   "$TASKS" "logs/qwen2_5_vl"
