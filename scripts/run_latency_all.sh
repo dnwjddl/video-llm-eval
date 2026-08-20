@@ -62,12 +62,12 @@ run_one videollm qwen2_vl        Qwen/Qwen2-VL-7B-Instruct
 run_one videollm qwen3_vl        Qwen/Qwen3-VL-8B-Instruct
 run_one videollm gemma4          google/gemma-4-E2B-it
 run_one videollm gemma4          google/gemma-4-E4B-it
-# InternVL2/2.5의 remote code는 구버전 transformers 필요 → llava 환경(4.40)에서 실행
-# ('all_tied_weights_keys' AttributeError가 최신 transformers와의 충돌 증상)
+# InternVL remote code는 최신 transformers와 충돌 ('all_tied_weights_keys' AttributeError)
+# → 2/2.5/3은 llava 환경(4.40), 3.5는 Qwen3 LM이라 중간 버전 환경(internvl) 필요 (README 참고)
 run_one llava    internvl2       OpenGVLab/InternVL2-8B
 run_one llava    internvl2_5     OpenGVLab/InternVL2_5-8B
-run_one videollm internvl3       OpenGVLab/InternVL3-8B
-run_one videollm internvl3_5     OpenGVLab/InternVL3_5-8B
+run_one llava    internvl3       OpenGVLab/InternVL3-8B
+run_one internvl internvl3_5     OpenGVLab/InternVL3_5-8B
 
 echo ""
 echo "모두 끝. 차트 생성: python latency/plot_latency.py  (결과: latency_results/)"

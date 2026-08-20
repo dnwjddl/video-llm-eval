@@ -241,7 +241,17 @@ HF_HUB_OFFLINE=1 bash scripts/run_internvl.sh mvbench OpenGVLab/InternVL3-8B
 # 다른 세대: OpenGVLab/InternVL2-8B, OpenGVLab/InternVL2_5-8B, OpenGVLab/InternVL3_5-8B
 ```
 
-- InternVL은 `trust_remote_code` 기반 커스텀 코드라 transformers 버전을 탑니다. `videollm` 환경(최신 transformers)에서 구세대(InternVL2/2.5)가 import 에러를 내면, `llava` 환경(transformers 4.40.0)에서 시도해보세요.
+- **InternVL은 transformers 버전을 탑니다** (`'all_tied_weights_keys'` AttributeError = 최신 transformers와 충돌 증상). 환경 배치:
+  - InternVL2 / 2.5 / **3** → `llava` 환경 (transformers 4.40 — InternVL3의 Qwen2.5 LM은 Qwen2 아키텍처라 동작)
+  - InternVL**3.5** → Qwen3 LM이라 4.51+ 필요, 최신과는 충돌 → 전용 환경 생성:
+    ```bash
+    conda create -n internvl python=3.10 -y
+    conda activate internvl
+    pip install "git+https://github.com/EvolvingLMMs-Lab/lmms-eval.git"
+    pip install "transformers==4.55.0" decord timm einops
+    pip uninstall -y torch torchvision && pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+    ```
+    (4.55.0에서 안 되면 4.51.3으로 재시도)
 - InternVL3/3.5 스크립트는 flash-attn 설치 여부를 자동 감지해서 있으면 켜고 없으면 끕니다.
 
 **flash-attn 설치 (선택, 추론 속도 향상):**
