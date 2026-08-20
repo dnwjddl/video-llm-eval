@@ -15,6 +15,11 @@
 | Qwen2.5-VL | `Qwen/Qwen2.5-VL-7B-Instruct` (3B/7B/32B/72B) | Qwen2.5-7B LM, 전체 ~8.3B | 재설계 ViT (~0.67B), window attention | `qwen2_5_vl` | `videollm` |
 | Gemma 4 E2B | `google/gemma-4-E2B-it` | 유효 2.3B / 전체 5.1B (PLE) | 자체 경량 인코더 (~0.15B), 토큰 budget 70–1120/이미지 | `gemma4` | `videollm` |
 | Gemma 4 E4B | `google/gemma-4-E4B-it` | 유효 4.5B / 전체 8B (PLE) | 자체 경량 인코더 (~0.15B), 토큰 budget 70–1120/이미지 | `gemma4` | `videollm` |
+| Qwen3-VL | `Qwen/Qwen3-VL-8B-Instruct` (2B/4B/8B/32B + MoE) | Qwen3-8B LM, 전체 ~9B | 자체 ViT | `qwen3_vl` | `videollm` |
+| InternVL2 | `OpenGVLab/InternVL2-8B` | InternLM2.5-7B LM, 전체 ~8B | InternViT-300M | `internvl2` | `videollm` |
+| InternVL2.5 | `OpenGVLab/InternVL2_5-8B` | InternLM2.5-7B LM, 전체 ~8B | InternViT-300M | `internvl2` | `videollm` |
+| InternVL3 | `OpenGVLab/InternVL3-8B` | Qwen2.5-7B LM, 전체 ~8B | InternViT-300M | `internvl3` | `videollm` |
+| InternVL3.5 | `OpenGVLab/InternVL3_5-8B` | Qwen3-8B LM, 전체 ~9B | InternViT-300M | `internvl3_5` | `videollm` |
 
 > Gemma 4의 "유효(Effective) 파라미터"는 Per-Layer Embeddings(PLE) 기법으로 줄인 **메모리 기준** 수치입니다. 실제 연산량은 전체 파라미터 쪽에 가깝습니다 (아래 [속도 비교](#mvbench-실측-소요-시간-a100-40g-1장-기준) 참고).
 
@@ -220,6 +225,24 @@ bash scripts/run_gemma4.sh "" google/gemma-4-E4B-it            # E4B 전체 벤�
 - 플러그인 인식이 안 되면: `pip install -e gemma4_plugin` 재실행 후 1-4의 plugin OK 확인.
 - Gemma 4는 최신 transformers가 필요합니다. `llava` 환경에서 돌리면 안 됩니다.
 - E2B/E4B는 온디바이스 지향 모델이라 장시간 비디오 벤치마크에서 프레임 수 제한의 영향이 큽니다. 결과 해석 시 참고.
+
+### 4-6. Qwen3-VL / InternVL 계열 (`videollm` 환경)
+
+```bash
+conda activate videollm
+
+# Qwen3-VL 8B
+hf download Qwen/Qwen3-VL-8B-Instruct
+HF_HUB_OFFLINE=1 bash scripts/run_qwen3_vl.sh mvbench
+
+# InternVL — 체크포인트 이름으로 세대(래퍼) 자동 선택
+hf download OpenGVLab/InternVL3-8B
+HF_HUB_OFFLINE=1 bash scripts/run_internvl.sh mvbench OpenGVLab/InternVL3-8B
+# 다른 세대: OpenGVLab/InternVL2-8B, OpenGVLab/InternVL2_5-8B, OpenGVLab/InternVL3_5-8B
+```
+
+- InternVL은 `trust_remote_code` 기반 커스텀 코드라 transformers 버전을 탑니다. `videollm` 환경(최신 transformers)에서 구세대(InternVL2/2.5)가 import 에러를 내면, `llava` 환경(transformers 4.40.0)에서 시도해보세요.
+- InternVL3/3.5는 flash-attn이 기본이지만 스크립트에서 `use_flash_attn=False`로 꺼뒀습니다 (미설치 환경 대비). flash-attn을 설치했다면 스크립트에서 True로 바꾸면 더 빠릅니다.
 
 ### 전 모델 일괄 실행
 
