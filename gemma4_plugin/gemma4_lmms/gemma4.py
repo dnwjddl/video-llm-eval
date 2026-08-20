@@ -7,6 +7,7 @@ the Gemma 4 processor.
 """
 
 import os
+import re
 import warnings
 from typing import List, Optional, Tuple, Union
 
@@ -262,15 +263,31 @@ class Gemma4(lmms):
                 batched_messages.append(message)
 
             template_kwargs = {"num_frames": effective_num_frames} if has_video else {}
-            inputs = self.processor.apply_chat_template(
-                batched_messages,
-                add_generation_prompt=True,
-                tokenize=True,
-                return_dict=True,
-                return_tensors="pt",
-                padding=True,
-                **template_kwargs,
-            )
+            # Decoders disagree on frame counts for variable-frame-rate clips, so a
+            # pre-count can still overshoot what the processor's own loader sees.
+            # On "num_frames exceeds total_num_frames=N", retry with the N the
+            # processor reported.
+            while True:
+                try:
+                    inputs = self.processor.apply_chat_template(
+                        batched_messages,
+                        add_generation_prompt=True,
+                        tokenize=True,
+                        return_dict=True,
+                        return_tensors="pt",
+                        padding=True,
+                        **template_kwargs,
+                    )
+                    break
+                except ValueError as e:
+                    m = re.search(r"total_num_frames=(\d+)", str(e))
+                    reported = int(m.group(1)) if m else 0
+                    current = template_kwargs.get("num_frames")
+                    if has_video and current is not None and 0 < reported < current:
+                        eval_logger.warning(f"num_frames={current} exceeds actual {reported}; retrying with {reported}")
+                        template_kwargs["num_frames"] = reported
+                        continue
+                    raise
             inputs = inputs.to(self.model.device)
             if "pixel_values" in inputs:
                 inputs["pixel_values"] = inputs["pixel_values"].to(torch.bfloat16)
