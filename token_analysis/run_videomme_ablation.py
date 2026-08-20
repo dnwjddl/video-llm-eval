@@ -42,6 +42,7 @@ def main():
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--num_frames", type=int, default=32)
     ap.add_argument("--max_new_tokens", type=int, default=16)
+    ap.add_argument("--limit", type=int, default=None, help="디버그용: duration당 N개만 평가")
     args = ap.parse_args()
 
     from compress import METHODS, compress
@@ -54,11 +55,17 @@ def main():
 
     orig = llava_arch.LlavaMetaForCausalLM.get_2dPool
     method, keep = args.method, args.keep
+    state = {"calls": 0}
 
     def patched(self, image_feature, stride=2):
+        state["calls"] += 1
         if method == "none":
-            return orig(self, image_feature, stride)
-        return compress(image_feature, method, keep)
+            out = orig(self, image_feature, stride)
+        else:
+            out = compress(image_feature, method, keep)
+        if state["calls"] <= 2:
+            print(f"[patch] get_2dPool call #{state['calls']}: {tuple(image_feature.shape)} -> {tuple(out.shape)}", flush=True)
+        return out
 
     llava_arch.LlavaMetaForCausalLM.get_2dPool = patched
     print(f"[videomme_ablation] method={method}, keep={keep}", flush=True)
@@ -78,11 +85,14 @@ def main():
     )
     model.eval()
 
-    out_path = os.path.join(BASE, "results_videomme", f"{method}_keep{keep}.json")
+    suffix = "_debug" if args.limit else ""
+    out_path = os.path.join(BASE, "results_videomme", f"{method}_keep{keep}{suffix}.json")
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
     stats = {}
     for dur, rows in samples.items():
+        if args.limit:
+            rows = rows[:args.limit]
         correct = total = 0
         for i, row in enumerate(rows):
             path = vindex.get(row["videoID"])
@@ -112,6 +122,8 @@ def main():
                 continue
             letter = extract_letter(pred)
             gt = str(row["answer"]).strip().strip("()").upper()[:1]
+            if args.limit and i < 3:
+                print(f"  [{dur} #{i}] pred={pred!r} -> {letter}, gt={gt}", flush=True)
             total += 1
             correct += int(letter == gt)
             if (i + 1) % 10 == 0:
