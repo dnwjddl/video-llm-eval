@@ -175,6 +175,24 @@ class Gemma4(lmms):
             quality=85,
         )
 
+    @staticmethod
+    def _video_total_frames(path: str) -> Optional[int]:
+        try:
+            from decord import VideoReader
+
+            return len(VideoReader(path))
+        except Exception:
+            pass
+        try:
+            import cv2
+
+            cap = cv2.VideoCapture(path)
+            n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            cap.release()
+            return n if n > 0 else None
+        except Exception:
+            return None
+
     def generate_until(self, requests: List[Instance]) -> List[str]:
         res = []
 
@@ -203,6 +221,10 @@ class Gemma4(lmms):
                 contexts = list(contexts)
 
             batched_messages = []
+            # Short clips can have fewer frames than max_num_frames; asking the
+            # processor for more than the video holds raises ValueError.
+            effective_num_frames = self.max_num_frames
+            has_video = False
             for i, context in enumerate(contexts):
                 if "<image>" in context:
                     context = context.replace("<image>", "")
@@ -220,6 +242,10 @@ class Gemma4(lmms):
                             if not os.path.exists(visual):
                                 eval_logger.warning(f"Video file not found: {visual}")
                                 continue
+                            has_video = True
+                            total = self._video_total_frames(visual)
+                            if total is not None and total < effective_num_frames:
+                                effective_num_frames = total
                             processed_visuals.append({"type": "video", "video": visual, "max_pixels": self.max_pixels, "min_pixels": self.min_pixels})
                         elif isinstance(visual, Image.Image):
                             processed_visuals.append({"type": "image", "image": self._encode_image_data_url(visual), "max_pixels": self.max_pixels, "min_pixels": self.min_pixels})
@@ -235,6 +261,7 @@ class Gemma4(lmms):
                 )
                 batched_messages.append(message)
 
+            template_kwargs = {"num_frames": effective_num_frames} if has_video else {}
             inputs = self.processor.apply_chat_template(
                 batched_messages,
                 add_generation_prompt=True,
@@ -242,7 +269,7 @@ class Gemma4(lmms):
                 return_dict=True,
                 return_tensors="pt",
                 padding=True,
-                num_frames=self.max_num_frames,
+                **template_kwargs,
             )
             inputs = inputs.to(self.model.device)
             if "pixel_values" in inputs:
