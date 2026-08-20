@@ -242,7 +242,20 @@ HF_HUB_OFFLINE=1 bash scripts/run_internvl.sh mvbench OpenGVLab/InternVL3-8B
 ```
 
 - InternVL은 `trust_remote_code` 기반 커스텀 코드라 transformers 버전을 탑니다. `videollm` 환경(최신 transformers)에서 구세대(InternVL2/2.5)가 import 에러를 내면, `llava` 환경(transformers 4.40.0)에서 시도해보세요.
-- InternVL3/3.5는 flash-attn이 기본이지만 스크립트에서 `use_flash_attn=False`로 꺼뒀습니다 (미설치 환경 대비). flash-attn을 설치했다면 스크립트에서 True로 바꾸면 더 빠릅니다.
+- InternVL3/3.5 스크립트는 flash-attn 설치 여부를 자동 감지해서 있으면 켜고 없으면 끕니다.
+
+**flash-attn 설치 (선택, 추론 속도 향상):**
+
+```bash
+conda activate videollm
+pip install ninja
+MAX_JOBS=4 pip install flash-attn --no-build-isolation
+python -c "import flash_attn; print(flash_attn.__version__)"   # 버전 나오면 성공
+```
+
+- 운이 좋으면(torch/CUDA/파이썬 조합에 맞는 미리 빌드된 wheel이 있으면) 몇 분 안에 끝나고, 소스 빌드로 넘어가면 30분~1시간 이상 컴파일합니다. `MAX_JOBS=4`는 컴파일 중 메모리 폭주 방지용.
+- 빌드가 실패하면 [flash-attention releases](https://github.com/Dao-AILab/flash-attention/releases)에서 자기 조합에 맞는 wheel을 직접 받아 설치하세요. 파일명 규칙: `flash_attn-<버전>+cu12torch<torch버전>cxx11abiFALSE-cp310-...whl` (cp310 = python 3.10).
+- 설치 후엔 Qwen/Gemma 계열 스크립트에도 model_args에 `attn_implementation=flash_attention_2`를 추가하면 같은 가속을 받습니다.
 
 ### 전 모델 일괄 실행
 

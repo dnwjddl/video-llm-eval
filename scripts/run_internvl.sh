@@ -21,11 +21,16 @@ case "$(basename "$CKPT")" in
 esac
 
 # modality=video: 비디오 벤치마크 필수 설정
-# InternVL3/3.5는 flash-attn이 기본 활성인데, 미설치 환경을 위해 꺼둠
-#   (flash-attn을 설치했다면 use_flash_attn=True로 바꾸면 더 빠릅니다)
+# flash-attn은 설치되어 있으면 자동으로 켜고, 없으면 끕니다
 ARGS="pretrained=${CKPT},modality=video,num_frame=32"
 if [ "$MODEL" != "internvl2" ]; then
-  ARGS="${ARGS},use_flash_attn=False"
+  if python -c "import flash_attn" 2>/dev/null; then
+    echo "flash-attn 감지됨 → use_flash_attn=True"
+    ARGS="${ARGS},use_flash_attn=True"
+  else
+    echo "flash-attn 미설치 → use_flash_attn=False (설치법은 README 참고)"
+    ARGS="${ARGS},use_flash_attn=False"
+  fi
 fi
 
 run_eval "$MODEL" "$ARGS" "$TASKS" "logs/$(basename "$CKPT")"
