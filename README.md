@@ -7,13 +7,16 @@
 
 ## 지원 모델
 
-| 모델 | HuggingFace 체크포인트 | lmms-eval 모델 이름 | 사용 환경 |
-|---|---|---|---|
-| LLaVA-OneVision | `lmms-lab/llava-onevision-qwen2-7b-ov` (0.5B/7B/72B) | `llava_onevision` | `llava` |
-| LLaVA-Video | `lmms-lab/LLaVA-Video-7B-Qwen2` (7B/72B) | `llava_vid` | `llava` |
-| Qwen2-VL | `Qwen/Qwen2-VL-7B-Instruct` (2B/7B/72B) | `qwen2_vl` | `videollm` |
-| Qwen2.5-VL | `Qwen/Qwen2.5-VL-7B-Instruct` (3B/7B/32B/72B) | `qwen2_5_vl` | `videollm` |
-| Gemma 4 | `google/gemma-4-E2B-it`, `google/gemma-4-E4B-it` | `gemma4` | `videollm` |
+| 모델 | HuggingFace 체크포인트 | 파라미터 (LM + 전체) | Vision Encoder | lmms-eval 모델 이름 | 사용 환경 |
+|---|---|---|---|---|---|
+| LLaVA-OneVision | `lmms-lab/llava-onevision-qwen2-7b-ov` (0.5B/7B/72B) | Qwen2-7B LM, 전체 ~8B | SigLIP-SO400M (~0.4B) | `llava_onevision` | `llava` |
+| LLaVA-Video | `lmms-lab/LLaVA-Video-7B-Qwen2` (7B/72B) | Qwen2-7B LM, 전체 ~8B | SigLIP-SO400M (~0.4B) | `llava_vid` | `llava` |
+| Qwen2-VL | `Qwen/Qwen2-VL-7B-Instruct` (2B/7B/72B) | Qwen2-7B LM, 전체 ~8.3B | 자체 ViT (~0.67B), naive dynamic resolution | `qwen2_vl` | `videollm` |
+| Qwen2.5-VL | `Qwen/Qwen2.5-VL-7B-Instruct` (3B/7B/32B/72B) | Qwen2.5-7B LM, 전체 ~8.3B | 재설계 ViT (~0.67B), window attention | `qwen2_5_vl` | `videollm` |
+| Gemma 4 E2B | `google/gemma-4-E2B-it` | 유효 2.3B / 전체 5.1B (PLE) | 자체 경량 인코더 (~0.15B), 토큰 budget 70–1120/이미지 | `gemma4` | `videollm` |
+| Gemma 4 E4B | `google/gemma-4-E4B-it` | 유효 4.5B / 전체 8B (PLE) | 자체 경량 인코더 (~0.15B), 토큰 budget 70–1120/이미지 | `gemma4` | `videollm` |
+
+> Gemma 4의 "유효(Effective) 파라미터"는 Per-Layer Embeddings(PLE) 기법으로 줄인 **메모리 기준** 수치입니다. 실제 연산량은 전체 파라미터 쪽에 가깝습니다 (아래 [속도 비교](#mvbench-실측-소요-시간-a100-40g-1장-기준) 참고).
 
 **conda 환경이 2개 필요합니다.** LLaVA-NeXT는 구버전 transformers(4.40.0)가 필요하고, Gemma 4는 최신 transformers가 필요해서 한 환경에 공존할 수 없습니다. 자세한 건 [1. 환경 세팅](#1-환경-세팅) 참고.
 
@@ -241,6 +244,27 @@ bash scripts/run_all.sh    # 단, llava/videollm 환경 분리 때문에 LLaVA �
 
 - **불가능한 것**: 72B/32B급 체크포인트는 40GB 한 장으로는 4bit 양자화 없이 불가.
 - 장시간 비디오 벤치마크(LVBench, MLVU, LongVideoBench)는 메모리보다 **시간**이 병목 — 벤치마크 하나에 수 시간~하루 이상. 같은 GPU에 두 모델을 동시에 올리지 마세요 (OOM).
+
+### MVBench 실측 소요 시간 (A100 40G 1장 기준)
+
+MVBench 4,000문항 기준 실측 wall-clock입니다 (1회 측정치라 오차 있음):
+
+| 모델 | 소요 시간 | 문항당 | 비고 |
+|---|---|---|---|
+| LLaVA-Video 7B | ~50분 | ~0.75초 | 64프레임인데도 spatial pooling 덕분에 빠름 |
+| Qwen2-VL 7B | ~50분 | ~0.75초 | `max_pixels` 낮춘 설정 기준 |
+| LLaVA-OneVision 7B | ~2시간 45분 | ~2.5초 | **첫 실행이라 MVBench 데이터셋 전처리(압축 해제 + 캐시 빌드) 시간이 포함됨** — 순수 추론은 이보다 빠를 것 |
+| Gemma 4 E2B | ~11시간 15분 | ~10초 | 아래 참고 |
+
+#### 왜 파라미터가 제일 적은 E2B가 제일 느린가?
+
+파라미터 수와 추론 속도는 별개입니다. E2B가 느린 이유:
+
+1. **"유효 2.3B"는 메모리 기준이지 연산량 기준이 아님.** PLE(Per-Layer Embeddings)는 "2B급 메모리 사용량"을 만드는 기법이고, 실제 파라미터는 5.1B, 연산량(FLOPs)도 그에 가깝습니다. 온디바이스에서 "메모리에 들어가느냐"를 위한 설계라 GPU 서버에서의 속도 이점은 이름만큼 크지 않습니다.
+2. **추론 경로의 최적화 수준 차이 (가장 큰 요인).** LLaVA 계열은 LLaVA-NeXT 레포의 손질된 경로(효율적 프레임 토큰 풀링, flash-attn/SDPA 자동 선택, decord 디코딩)를 타고, Qwen 계열도 transformers에 오랫동안 최적화가 쌓여 있습니다. 반면 Gemma 4는 이 레포의 플러그인이 transformers **범용 경로**로 돌리며, 출시된 지 얼마 안 된 아키텍처라 커널 최적화도 아직 덜 되어 있습니다 (attention 기본값이 비효율적인 eager로 잡힐 수 있음).
+3. **프레임당 비주얼 토큰 수 차이.** LLaVA 계열은 pooling으로 프레임 토큰을 강하게 압축하지만, Gemma 4 프로세서의 토큰 budget 설정에 따라 같은 32프레임이라도 시퀀스가 훨씬 길어질 수 있습니다.
+
+속도 개선 실험: `scripts/run_gemma4.sh`의 model_args에 `attn_implementation=sdpa`를 추가해보세요. 벤치마크 점수에는 영향 없이 속도만 달라집니다.
 
 ---
 
