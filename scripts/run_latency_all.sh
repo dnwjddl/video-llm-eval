@@ -21,12 +21,26 @@ fi
 echo "video_dir OK: $VIDEO_DIR ($N_MP4 mp4)"
 mkdir -p debug
 
+# conda 없이 각 환경의 python 바이너리를 직접 사용 (비대화형 셸에서 conda가 없어도 동작)
+env_python() {
+  local env="$1"
+  for base in "$HOME/miniconda3" "$HOME/anaconda3" "/opt/conda" "$HOME/conda" "${CONDA_PREFIX%%/envs/*}"; do
+    if [ -n "$base" ] && [ -x "$base/envs/$env/bin/python" ]; then
+      echo "$base/envs/$env/bin/python"
+      return 0
+    fi
+  done
+  return 1
+}
+
 run_one() {
   local env="$1" family="$2" ckpt="$3"
   local log="debug/latency_$(basename "$ckpt")_output.txt"
   echo ""
   echo "############ [$env] $family — $ckpt ############"
-  conda run -n "$env" --no-capture-output python latency/profile_latency.py \
+  local py
+  py=$(env_python "$env") || { echo "!! conda 환경 '$env'의 python을 찾지 못했습니다 — 건너뜀"; return; }
+  "$py" latency/profile_latency.py \
       --family "$family" --pretrained "$ckpt" \
       --dataset videomme --video_dir "$VIDEO_DIR" --n_per_duration 50 2>&1 | tee "$log"
   if [ "${PIPESTATUS[0]}" -eq 0 ]; then
