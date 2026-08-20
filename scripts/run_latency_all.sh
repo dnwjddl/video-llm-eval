@@ -36,6 +36,12 @@ env_python() {
 run_one() {
   local env="$1" family="$2" ckpt="$3"
   local log="debug/latency_$(basename "$ckpt")_output.txt"
+  local json="latency_results/$(basename "$ckpt")_videomme.json"
+  if [ -f "$json" ] && grep -q '"complete": true' "$json"; then
+    echo ""
+    echo "############ 스킵 (이미 완료): $ckpt"
+    return
+  fi
   echo ""
   echo "############ [$env] $family — $ckpt ############"
   local py

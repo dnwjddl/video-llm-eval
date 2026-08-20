@@ -502,13 +502,15 @@ def main():
             results[dur].append(rec)
             total = sum(rec.get(s, 0.0) for s in STAGES)
             print(f"{dur} {i + 1}/{len(rows)}: {total:.1f}s/sample", flush=True)
-            # 매 샘플 후 중간 저장 — 중간에 중단해도 지금까지의 평균으로 plot 가능
-            json.dump(build_report(results), open(out, "w"), indent=2, ensure_ascii=False)
+        # duration 하나 끝날 때마다 평균 저장 — 중단해도 완료된 구간은 plot 가능
+        json.dump(build_report(results), open(out, "w"), indent=2, ensure_ascii=False)
+        print(f"[{dur} 완료] 중간 저장: {out}", flush=True)
 
     if skipped:
         print(f"\n[warn] {skipped}개 샘플 건너뜀 (비디오 파일 없음/에러)", flush=True)
 
     report = build_report(results)
+    report["complete"] = True  # 세 구간 모두 완주 표시 — run_latency_all.sh의 스킵 판정 기준
 
     print(f"\n===== latency breakdown (평균, 초/샘플) — {args.pretrained} =====")
     header = ["stage"] + [d for d in ("short", "medium", "long") if d in report["per_duration"]] + ["overall"]
