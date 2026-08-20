@@ -142,6 +142,7 @@ hf download sy1998/MLVU_dev               --repo-type dataset
 
 - 다운로드가 끊기면 같은 명령을 다시 실행 — 이어받기 됩니다.
 - 레포 이름 오타 주의: `lmms-eval` (m 두 개), `lms-eval` 아님.
+- **미리 받아두면 평가는 `HF_HUB_OFFLINE=1`로 실행하세요** (예: `HF_HUB_OFFLINE=1 bash scripts/run_llava_onevision.sh mvbench`). 평가 중 HF API를 안 건드려서 429 rate limit을 원천 차단합니다.
 
 ## 3. 모델 weight 다운로드
 
@@ -253,7 +254,8 @@ bash scripts/run_all.sh    # 단, llava/videollm 환경 분리 때문에 LLaVA �
 | pip "dependency resolver" 빨간 경고 | 미사용 패키지(sentence-transformers 등)의 버전 불평 | **무시**. 기준은 1-4 import 체크리스트 통과 여부 |
 | `RuntimeError: NVIDIA driver ... too old` | torch가 드라이버보다 새 CUDA로 빌드됨 | 드라이버에 맞는 빌드 재설치 (예: `--index-url .../whl/cu124`) ([1-3](#1-3-pytorch--cuda-드라이버-맞추기)) |
 | `LocalTokenNotFoundError` | HF 미로그인, 또는 로그인한 셸과 HF_HOME 불일치 | HF_HOME 고정 후 그 셸에서 `hf auth login` ([1-5](#1-5-huggingface-로그인)) |
-| `HfHubHTTPError` / `RetryError` | 대부분 위와 동일(토큰 401), 또는 gated 약관 미동의 | `hf auth whoami` 확인 → 안 되면 `--verbosity=DEBUG`로 HTTP 코드 확인 |
+| `HfHubHTTPError` / `RetryError` | 토큰 401, gated 약관 미동의(403), 요청 과다(429) 등 | `hf auth whoami` 확인 → 안 되면 `--verbosity=DEBUG`로 HTTP 코드 확인 |
+| `429 Too Many Requests` (5분당 1000 요청 한도) | 평가 중 스트리밍 다운로드로 API 요청 폭증 | 5~10분 대기 → `hf download <데이터셋> --repo-type dataset`으로 **미리 통째로 받고** → `HF_HUB_OFFLINE=1 bash scripts/...`로 평가 |
 | 받아둔 데이터셋이 안 보임 / 재다운로드 시작 | 셸마다 HF_HOME이 다름 | `hf cache scan`으로 실제 캐시 위치 확인 후 `.bashrc`에 HF_HOME 고정 |
 | `EnvironmentNameNotFound` (source ~/.bashrc 시) | `.bashrc`에 존재하지 않는 conda 환경 activate 줄 | 해당 줄 삭제: `sed -i '/conda activate <이름>/d' ~/.bashrc` |
 | `git clone ... 실패` (pip install git+...) | URL에서 org 부분(`LLaVA-VL/`) 누락 | 명령을 그대로 복사해서 실행 |
