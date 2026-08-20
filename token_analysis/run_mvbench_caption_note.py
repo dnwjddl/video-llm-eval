@@ -11,7 +11,7 @@
 복구하는지가 효과 크기. notes_qaware는 그 축의 이론적 천장.
 
 실행 (llava 환경, GPU):
-  python token_analysis/run_mvbench_caption_note.py --keep 0.25 --n_per_subtask 50
+  python token_analysis/run_mvbench_caption_note.py --keep 0.25 --n_per_subtask 100
 
 결과: token_analysis/results_caption_note/keep<keep>.json (서브태스크×조건별 정확도)
 """
@@ -116,7 +116,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--subtasks", default=DEFAULT_SUBTASKS)
     ap.add_argument("--keep", type=float, default=0.25, help="reduced 조건의 프레임 비율 (0.25 → 8/32프레임)")
-    ap.add_argument("--n_per_subtask", type=int, default=50)
+    ap.add_argument("--n_per_subtask", type=int, default=100)
     ap.add_argument("--num_frames", type=int, default=32)
     ap.add_argument("--n_notes", type=int, default=3, help="캡션 노트 개수 (정적 대표 프레임 수)")
     ap.add_argument("--pretrained", default="lmms-lab/llava-onevision-qwen2-7b-ov")
