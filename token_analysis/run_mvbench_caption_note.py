@@ -124,6 +124,7 @@ def main():
     conds = ["full", "reduced", "notes"] + ([] if args.skip_qaware else ["notes_qaware"])
     report = {"keep": args.keep, "n_notes": args.n_notes, "pretrained": args.pretrained, "subtasks": {}}
     k_frames = max(1, int(args.num_frames * args.keep))
+    records = []  # 문항별 조건별 정오 — 쌍대(McNemar) 검정용
 
     for sub in args.subtasks.split(","):
         ds = load_dataset("OpenGVLab/MVBench", sub, split="train")
@@ -178,8 +179,10 @@ def main():
                 preds["notes_qaware"] = runner.generate(reduced, notes_txt_qa + "\n\n" + q)
 
             total += 1
+            rec = {c: int(extract_letter(preds[c]) == gt) for c in conds}
+            records.append(rec)
             for c in conds:
-                correct[c] += int(extract_letter(preds[c]) == gt)
+                correct[c] += rec[c]
             if (pi + 1) % 10 == 0:
                 accs = " ".join(f"{c}={correct[c] / total:.2f}" for c in conds)
                 print(f"{sub} {pi + 1}/{len(picks)}: {accs}", flush=True)
@@ -190,12 +193,36 @@ def main():
             print(f"[{sub}] {report['subtasks'][sub]}", flush=True)
         json.dump(report, open(out_path, "w"), indent=2, ensure_ascii=False)
 
-    # 전체 요약
+    # 전체 요약 + 쌍대(McNemar exact) 검정
     if report["subtasks"]:
         print("\n===== 요약 (전 서브태스크 평균) =====")
         for c in conds:
             vals = [v[c] for v in report["subtasks"].values()]
             print(f"{c:14s} {sum(vals) / len(vals):.4f}")
+
+        from math import comb
+
+        def mcnemar(a, b):
+            """조건 a→b 쌍대 비교: (b만 정답, a만 정답, 양측 exact p)."""
+            n01 = sum(1 for r in records if not r[a] and r[b])   # b가 살린 문항
+            n10 = sum(1 for r in records if r[a] and not r[b])   # b가 망친 문항
+            n = n01 + n10
+            if n == 0:
+                return n01, n10, 1.0
+            p = 2 * sum(comb(n, k) for k in range(0, min(n01, n10) + 1)) / (2 ** n)
+            return n01, n10, min(1.0, p)
+
+        print("\n===== 쌍대 검정 (McNemar exact, n=%d) =====" % len(records))
+        pairs = [("reduced", "notes"), ("reduced", "notes_qaware"), ("notes", "notes_qaware"), ("full", "notes_qaware")]
+        report["mcnemar"] = {}
+        for a, b in pairs:
+            if a not in conds or b not in conds:
+                continue
+            n01, n10, p = mcnemar(a, b)
+            verdict = "유의" if p < 0.05 else "유의하지 않음"
+            print(f"{a:>13s} → {b:13s}: +{n01}문항 살림 / -{n10}문항 망침, p={p:.4f} ({verdict})")
+            report["mcnemar"][f"{a}->{b}"] = {"saved": n01, "broke": n10, "p": round(p, 5)}
+
         report["overall"] = {c: round(sum(v[c] for v in report["subtasks"].values()) / len(report["subtasks"]), 4) for c in conds}
         report["complete"] = True
         json.dump(report, open(out_path, "w"), indent=2, ensure_ascii=False)
