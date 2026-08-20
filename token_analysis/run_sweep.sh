@@ -12,7 +12,8 @@ TASKS_ARG=()
 #   GPU A: METHODS="pool_avg pool_max random pca_select" CUDA_VISIBLE_DEVICES=0 bash ...
 #   GPU B: METHODS="tome kmeans temporal_pool framediff" RECON=0 CUDA_VISIBLE_DEVICES=1 bash ...
 METHODS="${METHODS:-pool_avg pool_max random pca_select tome kmeans temporal_pool framediff}"
-KEEPS="0.5 0.25 0.125 0.05"
+# keep 우선 순회: 극단 압축(차이가 가장 큰 구간)부터 결과가 나오도록
+KEEPS="0.05 0.125 0.25 0.5"
 
 done_already() {  # 해당 조합 결과 폴더에 results.json이 있으면 완료로 간주
   ls token_analysis/results/"$1"_keep"$2"/*/*results.json >/dev/null 2>&1 || \
@@ -26,14 +27,14 @@ else
   python token_analysis/run_token_ablation.py --method none --keep 1.0 "${TASKS_ARG[@]}"
 fi
 
-for m in $METHODS; do
-  for k in $KEEPS; do
+for k in $KEEPS; do
+  for m in $METHODS; do
     if done_already "$m" "$k"; then
       echo "스킵 (완료): $m keep=$k"
       continue
     fi
     echo ""
-    echo "########## $m keep=$k ##########"
+    echo "########## keep=$k — $m ##########"
     python token_analysis/run_token_ablation.py --method "$m" --keep "$k" "${TASKS_ARG[@]}" || \
       echo "!! 실패: $m keep=$k — 건너뜀"
   done
