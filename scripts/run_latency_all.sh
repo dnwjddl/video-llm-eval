@@ -11,16 +11,30 @@ cd "$(dirname "$0")/.."
 
 VIDEO_DIR="${1:-$HOME/videomme_videos}"
 
+# 사전 체크: 비디오 폴더
+N_MP4=$(find "$VIDEO_DIR" -name "*.mp4" 2>/dev/null | wc -l)
+if [ "$N_MP4" -lt 1 ]; then
+  echo "!! $VIDEO_DIR 에 mp4가 없습니다. 먼저 비디오를 풀어주세요:"
+  echo "   python latency/extract_videos_subset.py --dataset videomme --out_dir $VIDEO_DIR"
+  exit 1
+fi
+echo "video_dir OK: $VIDEO_DIR ($N_MP4 mp4)"
+mkdir -p debug
+
 run_one() {
   local env="$1" family="$2" ckpt="$3"
+  local log="debug/latency_$(basename "$ckpt")_output.txt"
   echo ""
   echo "############ [$env] $family — $ckpt ############"
-  if conda run -n "$env" --no-capture-output python latency/profile_latency.py \
+  conda run -n "$env" --no-capture-output python latency/profile_latency.py \
       --family "$family" --pretrained "$ckpt" \
-      --dataset videomme --video_dir "$VIDEO_DIR" --n_per_duration 50; then
+      --dataset videomme --video_dir "$VIDEO_DIR" --n_per_duration 50 2>&1 | tee "$log"
+  if [ "${PIPESTATUS[0]}" -eq 0 ]; then
     echo "############ 완료: $ckpt"
   else
-    echo "############ !! 실패: $ckpt — 건너뛰고 계속"
+    echo "############ !! 실패: $ckpt — 에러 마지막 부분:"
+    tail -8 "$log" | sed 's/^/    /'
+    echo "############ (전체 로그: $log — scripts/send_debug.sh로 공유 가능)"
   fi
 }
 

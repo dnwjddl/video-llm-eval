@@ -289,8 +289,9 @@ class Gemma4(lmms):
                         continue
                     raise
             inputs = inputs.to(self.model.device)
-            if "pixel_values" in inputs:
-                inputs["pixel_values"] = inputs["pixel_values"].to(torch.bfloat16)
+            for k, v in inputs.items():
+                if torch.is_tensor(v) and torch.is_floating_point(v):
+                    inputs[k] = v.to(torch.bfloat16)
 
             default_gen_kwargs = {
                 "max_new_tokens": 128,
