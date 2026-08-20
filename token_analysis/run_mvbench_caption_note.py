@@ -84,6 +84,18 @@ class LlavaRunner:
         self.model.eval()
 
     @torch.no_grad()
+    def generate_text(self, text, max_new_tokens=24):
+        """비주얼 없이 텍스트만으로 생성 (deferral 1단계용)."""
+        from llava.conversation import conv_templates
+
+        conv = conv_templates["qwen_1_5"].copy()
+        conv.append_message(conv.roles[0], text)
+        conv.append_message(conv.roles[1], None)
+        ids = self.tokenizer(conv.get_prompt(), return_tensors="pt").input_ids
+        out = self.model.generate(ids.to(self.model.device), do_sample=False, max_new_tokens=max_new_tokens)
+        return self.tokenizer.decode(out[0][ids.shape[1]:], skip_special_tokens=True).strip()
+
+    @torch.no_grad()
     def generate(self, frames, text, max_new_tokens=24):
         from llava.constants import DEFAULT_IMAGE_TOKEN, IMAGE_TOKEN_INDEX
         from llava.conversation import conv_templates
@@ -121,7 +133,8 @@ def main():
     os.makedirs(OUT_DIR, exist_ok=True)
     out_path = os.path.join(OUT_DIR, f"keep{args.keep}.json")
 
-    conds = ["full", "reduced", "notes"] + ([] if args.skip_qaware else ["notes_qaware"])
+    # deferral: 캡션+질문만으로 먼저 시도 → 스스로 UNSURE면 그때만 비주얼(=notes 입력) 소환
+    conds = ["full", "reduced", "notes"] + ([] if args.skip_qaware else ["notes_qaware"]) + ["deferral"]
     report = {"keep": args.keep, "n_notes": args.n_notes, "pretrained": args.pretrained, "subtasks": {}}
     k_frames = max(1, int(args.num_frames * args.keep))
     records = []  # 문항별 조건별 정오 — 쌍대(McNemar) 검정용
@@ -132,6 +145,7 @@ def main():
         picks = rng.permutation(len(ds))[:args.n_per_subtask]
         correct = {c: 0 for c in conds}
         total = 0
+        escalated = 0
         t_caption = 0.0
         for pi, di in enumerate(picks):
             doc = ds[int(di)]
@@ -178,6 +192,17 @@ def main():
                 notes_txt_qa = "Scene notes from the full video:\n" + "\n".join(f"- {c}" for c in caps_qa)
                 preds["notes_qaware"] = runner.generate(reduced, notes_txt_qa + "\n\n" + q)
 
+            # deferral 1단계: 캡션+질문만 (비주얼 토큰 0개). 확실하면 글자, 아니면 UNSURE
+            stage1 = runner.generate_text(
+                notes_txt + "\n\n" + q +
+                '\nIf the notes clearly determine the answer, reply with only the option letter. '
+                'If you cannot determine it from the notes alone, reply exactly "UNSURE".')
+            if "UNSURE" in stage1.upper() or extract_letter(stage1) is None:
+                preds["deferral"] = preds["notes"]      # 2단계 = notes 입력과 동일 → 재사용
+                escalated += 1
+            else:
+                preds["deferral"] = stage1
+
             total += 1
             rec = {c: int(extract_letter(preds[c]) == gt) for c in conds}
             records.append(rec)
@@ -189,6 +214,7 @@ def main():
 
         if total:
             report["subtasks"][sub] = {"n": total, "caption_time_per_sample_s": round(t_caption / total, 2),
+                                       "deferral_escalation_rate": round(escalated / total, 4),
                                        **{c: round(correct[c] / total, 4) for c in conds}}
             print(f"[{sub}] {report['subtasks'][sub]}", flush=True)
         json.dump(report, open(out_path, "w"), indent=2, ensure_ascii=False)
@@ -213,7 +239,8 @@ def main():
             return n01, n10, min(1.0, p)
 
         print("\n===== 쌍대 검정 (McNemar exact, n=%d) =====" % len(records))
-        pairs = [("reduced", "notes"), ("reduced", "notes_qaware"), ("notes", "notes_qaware"), ("full", "notes_qaware")]
+        pairs = [("reduced", "notes"), ("reduced", "notes_qaware"), ("notes", "notes_qaware"),
+                 ("full", "notes_qaware"), ("notes", "deferral"), ("full", "deferral")]
         report["mcnemar"] = {}
         for a, b in pairs:
             if a not in conds or b not in conds:
