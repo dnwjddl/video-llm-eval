@@ -157,6 +157,62 @@ def kmeans(x, keep, iters=8):
     return torch.stack(outs)
 
 
+def _kmeans_centers(pool, k, iters=8):
+    n = pool.shape[0]
+    k = min(k, n)
+    centers = pool[torch.randperm(n, device=pool.device)[:k]].clone()
+    for _ in range(iters):
+        assign = torch.cdist(pool, centers).argmin(dim=-1)
+        for c_i in range(k):
+            m = assign == c_i
+            if m.any():
+                centers[c_i] = pool[m].mean(dim=0)
+    return centers
+
+
+def scribe_tf(x, keep, retain_frac=0.6):
+    """Scribe의 training-free 근사: 3-way 토큰 라우팅.
+
+    1) prune  — 이전 프레임 같은 위치와 유사한(예측 가능한) 토큰은 버림
+    2) note   — 정적/예측 가능한 내용은 k-means 센터 몇 개로 요약해 장면 맥락 보존
+    3) retain — novelty 높은(동적·특이) 토큰은 원본 그대로, 시간 순서 보존
+
+    예산 M = keep·F·N 중 retain_frac은 retain에, 나머지는 note에 배분.
+    반환: (1, M, D) — note 토큰들 뒤에 시간순 retain 토큰.
+    """
+    F, N, D = x.shape
+    M = max(2, int(F * N * keep))
+    m_retain = max(1, int(M * retain_frac))
+    m_note = max(1, M - m_retain)
+
+    xn = torch.nn.functional.normalize(x.float(), dim=-1)
+    novelty = torch.ones(F, N, device=x.device)
+    novelty[1:] = 1 - (xn[1:] * xn[:-1]).sum(-1)   # 이전 프레임 같은 위치 대비 변화량
+
+    flat = x.reshape(F * N, D)
+    order = novelty.reshape(-1).argsort(descending=True)
+    retain_idx = order[:m_retain].sort().values      # 시간 순서(플랫 인덱스 순) 보존
+    static_idx = order[m_retain:]
+
+    pool = flat[static_idx].float()
+    if pool.shape[0] > 8000:                          # kmeans 비용 상한
+        pool = pool[torch.randperm(pool.shape[0], device=x.device)[:8000]]
+    notes = _kmeans_centers(pool, m_note).to(x.dtype)
+
+    return torch.cat([notes, flat[retain_idx]], dim=0).unsqueeze(0)
+
+
+def shuffle_frames(x, keep):
+    """진단용: 프레임 순서 무작위 셔플 (토큰 수 유지) — 순서 정보 사용 여부 검증."""
+    F = x.shape[0]
+    return x[torch.randperm(F, device=x.device)]
+
+
+def reverse_frames(x, keep):
+    """진단용: 프레임 역순 (토큰 수 유지)."""
+    return x.flip(0)
+
+
 METHODS = {
     "none": none,
     "random": random_drop,
@@ -168,6 +224,9 @@ METHODS = {
     "pca_recon": pca_recon,
     "tome": tome,
     "kmeans": kmeans,
+    "scribe_tf": scribe_tf,
+    "shuffle": shuffle_frames,
+    "reverse": reverse_frames,
 }
 
 

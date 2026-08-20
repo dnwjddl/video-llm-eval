@@ -61,6 +61,8 @@ def main():
         state["calls"] += 1
         if method == "none":
             out = orig(self, image_feature, stride)
+        elif method in ("shuffle", "reverse"):
+            out = compress(orig(self, image_feature, stride), method, keep)
         else:
             out = compress(image_feature, method, keep)
         if state["calls"] <= 2:

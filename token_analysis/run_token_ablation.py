@@ -52,6 +52,9 @@ def main():
     def patched(self, image_feature, stride=2):
         if method == "none":
             return orig(self, image_feature, stride)
+        if method in ("shuffle", "reverse"):
+            # 순서 진단은 토큰 수 유지 — 원래 풀링(196/frame) 후 순서만 조작
+            return compress(orig(self, image_feature, stride), method, keep)
         return compress(image_feature, method, keep)
 
     llava_arch.LlavaMetaForCausalLM.get_2dPool = patched
