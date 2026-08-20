@@ -61,7 +61,7 @@ python token_analysis/plot_ablation.py
 | DyCoke / DynTok | 동적 토큰 압축 (비디오) | "DynaTok"으로 언급된 것이 이 중 하나일 가능성 |
 | TempMe, PruneVID, FastVID | 프레임 간 유사 토큰 병합/구간 선택 | temporal 중복 활용 계열 |
 | HoliTom | 전역(holistic) 중복까지 고려한 병합 | |
-| [LiteFrame](https://arxiv.org/abs/2605.17260) | ViT/LLM 스케일링 균형 재설계 | 2026, 인코더 쪽 접근 |
+| [LiteFrame](https://arxiv.org/abs/2605.17260) | 프레임당 16토큰 고정 WAP(4,2,2), 인코더 쪽 접근 | 2026, 공개 repo는 placeholder 상태 |
 | InfoMerge, OTT-Vid | 정보량/최적수송 기반 병합 | 2026 |
 | [서베이 (TMLR 2026)](https://arxiv.org/abs/2507.20198) | 토큰 압축 전반 정리 | [awesome list](https://github.com/cokeshao/Awesome-Multimodal-Token-Compression) |
 
