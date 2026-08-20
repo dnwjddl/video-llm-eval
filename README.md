@@ -335,6 +335,43 @@ tmux set -g mouse on      # 마우스로 창 전환/크기조절/스크롤 (복�
 
 **tmux 새 창을 열면**: `HF_HOME`은 `.bashrc` 덕에 자동으로 잡히지만, **conda 환경은 매번 직접 activate** 해야 합니다.
 
+## 7. Latency 프로파일링
+
+`latency/profile_latency.py`가 Video-MME / Video-MME v2에서 **short/medium/long별 N개(기본 50)를 랜덤 샘플링**해 QA 1회당 단계별 latency를 측정합니다.
+
+측정 단계: checkpoint load → video I/O & frame extraction → video preprocessing → vision encoder → projector → text tokenization → LLM prefill → autoregressive decode → detokenization.
+(vision/projector는 해당 서브모듈에 forward hook + CUDA sync로 측정, prefill은 첫 forward에서 중첩된 vision/projector 시간을 뺀 값, decode는 둘째 forward부터의 합)
+
+### 준비: 비디오 파일 풀어두기
+
+프로파일러는 평가 캐시와 별개로 mp4 폴더를 직접 읽습니다. HF 스냅샷의 zip을 풀어두세요:
+
+```bash
+SNAP=$(python -c "from huggingface_hub import snapshot_download; print(snapshot_download('lmms-eval/Video-MME', repo_type='dataset'))")
+mkdir -p ~/videomme_videos
+find "$SNAP" -name "*.zip" -exec unzip -n {} -d ~/videomme_videos \;
+```
+
+(Video-MME v2는 `MME-Benchmarks/Video-MME-v2`로 같은 방식, `~/videomme_v2_videos` 등으로)
+
+### 실행
+
+```bash
+# HF 계열 (videollm 환경): qwen2_vl | qwen2_5_vl | qwen3_vl | gemma4
+python latency/profile_latency.py --family qwen2_5_vl \
+    --pretrained Qwen/Qwen2.5-VL-7B-Instruct \
+    --dataset videomme --video_dir ~/videomme_videos --n_per_duration 50
+
+# LLaVA 계열 (llava 환경): llava_onevision | llava_vid
+python latency/profile_latency.py --family llava_onevision \
+    --pretrained lmms-lab/llava-onevision-qwen2-7b-ov \
+    --dataset videomme --video_dir ~/videomme_videos --n_per_duration 50
+```
+
+- 결과: 콘솔에 short/medium/long/overall별 단계 평균 표 + `latency_results/<모델>_<데이터셋>.json` 저장.
+- `--num_frames`(기본 32), `--max_new_tokens`(기본 32), `--seed`(기본 42 — 모델 간 같은 샘플로 비교됨) 조절 가능.
+- vision/projector 모듈을 못 찾는 모델이면 `[warn]`을 출력하고 해당 시간은 prefill에 합산된 채 측정됩니다.
+
 ## 결과 (진행 중)
 
 A100 40G 1장, 이 레포의 기본 스크립트 설정으로 측정한 결과입니다. 괄호는 공식 보고치.
