@@ -10,6 +10,10 @@ TASKS="${1:-$ALL_TASKS}"
 CKPT="${2:-google/gemma-4-E2B-it}"
 NAME="$(basename "$CKPT")"
 
+# system_prompt: Gemma는 객관식에서 장황한 설명/거절로 답해 letter 추출이 실패하므로
+# (MVBench 27.5점 사건) letter-only 답변을 강제. 쉼표 금지 — model_args 파싱이 깨짐.
+SYS="You are a helpful assistant. For multiple-choice questions you must answer with only the letter of the best option (e.g. A or B). Never explain and never refuse - always pick the single best option even if you are unsure."
+
 run_eval gemma4 \
-  "pretrained=${CKPT},max_num_frames=32" \
+  "pretrained=${CKPT},max_num_frames=32,system_prompt=${SYS}" \
   "$TASKS" "logs/${NAME}"
