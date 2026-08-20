@@ -27,6 +27,8 @@
 
 ## 실행
 
+### 트랙 A — MVBench (temporal vs spatial 태스크 축)
+
 ```bash
 conda activate llava
 # 단일 실험
@@ -35,6 +37,22 @@ python token_analysis/run_token_ablation.py --method pca_select --keep 0.25
 bash token_analysis/run_sweep.sh
 # 그래프 (overall / temporal / spatial 3패널 곡선)
 python token_analysis/plot_ablation.py
+```
+
+### 트랙 B — Video-MME 150샘플 (비디오 길이 축)
+
+latency breakdown에 썼던 그 150개(short/medium/long 각 50, seed 42)를 재사용해
+**비디오 길이별 열화**를 측정한다. 정답 letter는 데이터셋에 있어 자체 채점 (MCQ 매칭).
+150개라 조합당 ~30분 내외 — 빠른 반복용. n이 작으니 ±7%p 정도는 노이즈로 해석할 것.
+
+```bash
+conda activate llava
+# 단일 실험 (비디오는 latency/extract_videos_subset.py로 풀어둔 폴더)
+python token_analysis/run_videomme_ablation.py --method pool_avg --keep 0.25 --video_dir ~/videomme_videos
+# 스윕 (완료된 조합 자동 스킵)
+bash token_analysis/run_sweep_videomme.sh
+# 그래프 (short / medium / long 3패널 곡선)
+python token_analysis/plot_videomme_ablation.py
 ```
 
 - 기본 태스크는 대표 8개 서브태스크 (temporal 4 + spatial 4)로 스윕 비용을 줄였다.
