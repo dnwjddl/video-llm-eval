@@ -3,15 +3,19 @@
 오픈소스 Video LLM들을 주요 비디오 벤치마크에서 한 번에 검증(evaluate)하기 위한 레포입니다.
 평가 하니스로는 [lmms-eval](https://github.com/EvolvingLMMs-Lab/lmms-eval)을 사용합니다 — 아래의 모든 모델과 벤치마크를 공식 지원하므로, 이 레포는 **환경 세팅 + 실행 스크립트 + Gemma 4 플러그인 + 상세 가이드**를 제공합니다.
 
+> 이 README의 세팅 순서와 트러블슈팅은 실제 GPU 서버(A100 40G)에서 세팅하며 겪은 에러들을 기반으로 작성되었습니다. **순서대로 따라하는 것을 권장합니다.**
+
 ## 지원 모델
 
-| 모델 | HuggingFace 체크포인트 | lmms-eval 모델 이름 | 비고 |
+| 모델 | HuggingFace 체크포인트 | lmms-eval 모델 이름 | 사용 환경 |
 |---|---|---|---|
-| LLaVA-OneVision | `lmms-lab/llava-onevision-qwen2-7b-ov` (0.5B/7B/72B) | `llava_onevision` | LLaVA-NeXT 패키지 필요 |
-| LLaVA-Video | `lmms-lab/LLaVA-Video-7B-Qwen2` (7B/72B) | `llava_vid` | LLaVA-NeXT 패키지 필요 |
-| Qwen2-VL | `Qwen/Qwen2-VL-7B-Instruct` (2B/7B/72B) | `qwen2_vl` | `qwen-vl-utils` 필요 |
-| Qwen2.5-VL | `Qwen/Qwen2.5-VL-7B-Instruct` (3B/7B/32B/72B) | `qwen2_5_vl` | `qwen-vl-utils` 필요 |
-| Gemma 4 | `google/gemma-4-E2B-it`, `google/gemma-4-E4B-it` | `gemma4` | **이 레포의 플러그인으로 지원** ([아래 참고](#gemma-4-플러그인)) |
+| LLaVA-OneVision | `lmms-lab/llava-onevision-qwen2-7b-ov` (0.5B/7B/72B) | `llava_onevision` | `llava` |
+| LLaVA-Video | `lmms-lab/LLaVA-Video-7B-Qwen2` (7B/72B) | `llava_vid` | `llava` |
+| Qwen2-VL | `Qwen/Qwen2-VL-7B-Instruct` (2B/7B/72B) | `qwen2_vl` | `videollm` |
+| Qwen2.5-VL | `Qwen/Qwen2.5-VL-7B-Instruct` (3B/7B/32B/72B) | `qwen2_5_vl` | `videollm` |
+| Gemma 4 | `google/gemma-4-E2B-it`, `google/gemma-4-E4B-it` | `gemma4` | `videollm` |
+
+**conda 환경이 2개 필요합니다.** LLaVA-NeXT는 구버전 transformers(4.40.0)가 필요하고, Gemma 4는 최신 transformers가 필요해서 한 환경에 공존할 수 없습니다. 자세한 건 [1. 환경 세팅](#1-환경-세팅) 참고.
 
 ## 지원 벤치마크
 
@@ -27,213 +31,247 @@
 | MLVU | `mlvu_dev` | `sy1998/MLVU_dev` | 객관식 (dev split) |
 
 모든 벤치마크가 객관식/규칙 기반 채점이라 **GPT API 키 없이** 평가 가능합니다.
-(`videomme_v2_reasoning` 같은 서브태스크는 별도 judge가 필요할 수 있어 기본 스크립트에서 제외했습니다.)
 
 ---
 
-## 1. 설치
+## 1. 환경 세팅
+
+### 1-0. HF_HOME 먼저 정하기 (중요!)
+
+데이터셋/모델이 전부 `$HF_HOME` 아래에 저장되고, **HF 로그인 토큰도 `$HF_HOME/token`에 저장됩니다.**
+이걸 처음에 고정하지 않으면 "받아둔 데이터셋을 못 찾음", "로그인했는데 `LocalTokenNotFoundError`" 같은 문제가 생깁니다 (tmux 창마다 셸이 새로 뜨기 때문).
+
+```bash
+df -h                    # Avail 기준 여유가 큰 디스크 확인 (전체 벤치마크는 1TB+ 권장)
+export HF_HOME=<큰 디스크의 쓰기 가능한 경로>     # 예: /data/hf_cache 또는 $HOME/hf_cache
+echo "export HF_HOME=$HF_HOME" >> ~/.bashrc      # 영구 고정 — 반드시 할 것
+```
+
+- `/data` 같은 경로에서 `PermissionError: [Errno 13]`이 나면: `sudo mkdir -p /data/hf_cache && sudo chown -R $USER /data/hf_cache`, sudo가 없으면 홈이나 scratch 디스크 사용.
+- 현재 캐시가 어디에 뭘 갖고 있는지는 `hf cache scan`으로 언제든 확인 가능.
+
+### 1-1. conda 환경 ① `videollm` (Qwen2-VL / Qwen2.5-VL / Gemma 4)
 
 ```bash
 git clone https://github.com/dnwjddl/video-llm-eval.git
 cd video-llm-eval
+
+conda create -n videollm python=3.10 -y
+conda activate videollm
 bash setup.sh
 ```
 
-`setup.sh`가 하는 일:
+- `CondaToSNonInteractiveError` (Terms of Service 에러)가 나면:
+  ```bash
+  conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
+  conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
+  ```
+  또는 채널 자체를 우회: `conda create -n videollm python=3.10 -y -c conda-forge --override-channels`
 
-1. `lmms-eval`을 GitHub main 브랜치에서 설치 (Video-MME v2, Gemma 4 플러그인 지원에 필요)
-2. 비디오 디코딩/모델 의존성 설치: `decord`, `qwen-vl-utils`, `torch`, `accelerate` 등
-3. LLaVA 계열용 `llava` 패키지 (LLaVA-NeXT) 설치
-4. Gemma 4 플러그인 (`gemma4_plugin/`) 설치
-
-> **⚠️ LLaVA 계열은 별도 환경이 필요합니다.** LLaVA-NeXT는 구버전 transformers(`apply_chunking_to_forward` 등 제거된 API)를 기대하는 반면 Gemma 4는 최신 transformers가 필요해서 **한 환경에 공존할 수 없습니다.** LLaVA 전용 환경을 이렇게 만드세요:
->
-> ```bash
-> conda create -n llava python=3.10 -y
-> conda activate llava
-> pip install "git+https://github.com/LLaVA-VL/LLaVA-NeXT.git"
-> pip install "git+https://github.com/EvolvingLMMs-Lab/lmms-eval.git"
-> pip install "transformers==4.40.0" decord   # 반드시 마지막에 구버전으로 고정 (안 되면 4.45.2 시도)
-> ```
->
-> 이후 `run_llava_onevision.sh`/`run_llava_video.sh`는 `llava` 환경에서, 나머지(Qwen/Gemma 4)는 기본 환경에서 실행하세요.
-
-### HuggingFace 로그인
-
-일부 데이터셋(Video-MME v2, LongVideoBench)과 Google 모델은 HF 계정 인증이 필요할 수 있습니다:
+### 1-2. conda 환경 ② `llava` (LLaVA-OneVision / LLaVA-Video)
 
 ```bash
-pip install -U "huggingface_hub[cli]"
-hf auth login   # 또는 huggingface-cli login
+conda create -n llava python=3.10 -y
+conda activate llava
+pip install "git+https://github.com/LLaVA-VL/LLaVA-NeXT.git"
+pip install "git+https://github.com/EvolvingLMMs-Lab/lmms-eval.git"
+pip install "transformers==4.40.0" decord     # 반드시 마지막에! (설치 순서 중요)
 ```
 
-게이트된(gated) 리소스는 HF 웹페이지에서 먼저 약관에 동의해야 다운로드가 됩니다.
+- URL을 손으로 치지 말고 **그대로 복사**하세요. `LLaVA-VL/`(org 부분)이 빠지면 clone 실패합니다.
+- `transformers==4.40.0` 설치 시 pip이 의존성 충돌 경고(sentence-transformers 등)를 띄우는데 **무시해도 됩니다.** 판단 기준은 경고가 아니라 아래 1-4의 import 확인입니다.
+- 4.40.0에서 lmms-eval import가 실패하면 `4.45.2`로 올려서 재시도.
+
+### 1-3. PyTorch ↔ CUDA 드라이버 맞추기
+
+`RuntimeError: The NVIDIA driver on your system is too old`가 나면, pip이 설치한 최신 torch가 서버 드라이버보다 새로운 CUDA로 빌드된 것입니다. **드라이버 버전에 맞는 torch를 설치**하세요 (두 환경 모두 확인!):
+
+```bash
+nvidia-smi                # 우측 상단 "CUDA Version"이 드라이버가 지원하는 최대 버전
+# 예: CUDA Version 12.4 이면 →
+pip uninstall -y torch torchvision
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+# (12.1이면 cu121, 12.6이면 cu126 …)
+```
+
+### 1-4. 설치 확인 체크리스트
+
+```bash
+# 두 환경 공통
+python -c "import torch; print(torch.__version__, torch.cuda.is_available())"   # True 필수
+python -c "import lmms_eval; print('lmms_eval OK')"
+
+# llava 환경
+python -c "import transformers; print(transformers.__version__)"                # 4.40.0
+python -c "from llava.model.language_model.llava_llama import LlavaLlamaForCausalLM; print('llava OK')"
+
+# videollm 환경
+python -c "import transformers; print(transformers.__version__)"                # 최신 (4.40대면 pip install -U transformers)
+python -c "from gemma4_lmms.gemma4 import Gemma4; print('gemma4 plugin OK')"
+```
+
+### 1-5. HuggingFace 로그인
+
+`LocalTokenNotFoundError`, `HfHubHTTPError` 방지. **HF_HOME이 설정된 셸에서** 로그인하세요:
+
+```bash
+echo $HF_HOME             # 1-0에서 정한 경로가 나와야 함 (안 나오면 source ~/.bashrc)
+hf auth login             # 구버전 hub이면: huggingface-cli login
+# 토큰은 https://huggingface.co/settings/tokens 에서 생성 (Read 권한이면 충분)
+hf auth whoami            # 사용자명이 나오면 성공
+```
+
+게이트된(gated) 데이터셋(Video-MME v2, LongVideoBench 등)은 HF 웹페이지에서 약관 동의도 필요합니다.
 
 ---
 
 ## 2. 데이터셋 다운로드
 
-**기본적으로 아무것도 미리 받을 필요가 없습니다.** lmms-eval이 첫 실행 시 HF Hub에서 자동으로 다운로드하고 압축을 풀어줍니다. 캐시 위치는 `HF_HOME`(기본 `~/.cache/huggingface`)입니다.
-
-디스크가 작은 파티션이라면 실행 전에 캐시 위치를 옮겨두세요:
+lmms-eval이 첫 실행 시 자동으로 받지만, **미리 받아두는 것을 권장**합니다 (평가 도중 네트워크 실패 방지):
 
 ```bash
-export HF_HOME=/data/hf_cache   # 원하는 큰 디스크 경로
-```
-
-미리 받아두고 싶다면 (권장 — 평가 도중 네트워크 끊김 방지):
-
-```bash
-hf download lmms-eval/Video-MME          --repo-type dataset
-hf download MME-Benchmarks/Video-MME-v2  --repo-type dataset
-hf download OpenGVLab/MVBench            --repo-type dataset
+hf download lmms-eval/Video-MME           --repo-type dataset
+hf download MME-Benchmarks/Video-MME-v2   --repo-type dataset
+hf download OpenGVLab/MVBench             --repo-type dataset
 hf download longvideobench/LongVideoBench --repo-type dataset
-hf download lmms-eval/LVBench            --repo-type dataset
-hf download sy1998/MLVU_dev              --repo-type dataset
+hf download lmms-eval/LVBench             --repo-type dataset
+hf download sy1998/MLVU_dev               --repo-type dataset
 ```
 
-> **⚠️ 디스크 용량 주의**: 비디오 벤치마크는 매우 큽니다. Video-MME(~100GB), LongVideoBench/LVBench(장시간 비디오, 수백 GB) 등 **전체를 다 받으면 1TB 이상**을 잡아야 안전합니다. 벤치마크 하나씩 받아서 돌리고 지우는 방식도 가능합니다.
+> **⚠️ 디스크 용량 주의**: 전체를 다 받으면 1TB 이상이 필요합니다. 여유가 300~400GB 수준이면 **순환 방식**으로 진행하세요: 벤치마크 하나 받고 → 전 모델 평가 → `hf cache delete`로 지우고 → 다음 것. 첫 평가 때 zip 압축 해제로 공간이 추가로 필요하다는 것도 계산에 넣으세요. 진행 중 수시로 `df -h`로 확인.
 
----
+- 다운로드가 끊기면 같은 명령을 다시 실행 — 이어받기 됩니다.
+- 레포 이름 오타 주의: `lmms-eval` (m 두 개), `lms-eval` 아님.
 
 ## 3. 모델 weight 다운로드
 
-이것도 **자동**입니다. 첫 실행 시 HF Hub에서 자동으로 받아 `HF_HOME`에 캐시됩니다.
-
-미리 받아두려면:
+첫 실행 시 자동 다운로드되지만, 미리 받으려면:
 
 ```bash
-bash scripts/download_weights.sh          # 7B급 전 모델 + Gemma 4 E2B/E4B 일괄 다운로드
-# 또는 개별로:
-hf download lmms-lab/llava-onevision-qwen2-7b-ov
-hf download lmms-lab/LLaVA-Video-7B-Qwen2
-hf download Qwen/Qwen2-VL-7B-Instruct
-hf download Qwen/Qwen2.5-VL-7B-Instruct
-hf download google/gemma-4-E2B-it
-hf download google/gemma-4-E4B-it
+bash scripts/download_weights.sh     # 전 모델 일괄 (~90GB)
 ```
-
-모델 weight 용량: 7B급 모델은 각각 약 15~17GB, Gemma 4 E2B/E4B는 각각 약 6GB/16GB(bf16 safetensors) 수준입니다. 전부 받으면 약 80~90GB입니다.
 
 ---
 
-## 4. 평가 실행 방법
+## 4. 모델별 사용법
 
-모든 스크립트는 `scripts/`에 있고, 공통 인터페이스는 다음과 같습니다:
+공통 사항:
 
-```bash
-bash scripts/run_<model>.sh [TASKS] [CHECKPOINT]
-```
+- 스크립트 인터페이스: `bash scripts/run_<model>.sh [TASKS] [CHECKPOINT]` — TASKS 생략(또는 `""`) 시 8개 벤치마크 전부.
+- 오래 걸리므로 **tmux 안에서** 실행하세요. 결과는 `logs/<model>/`에 저장 (`--log_samples`라 샘플별 응답까지 남음).
+- 멀티 GPU면 `NUM_GPUS=4 bash scripts/...`로 데이터 병렬, 특정 GPU 지정은 `CUDA_VISIBLE_DEVICES=1 bash scripts/...`.
+- **본 평가 전에 항상 스모크 테스트** (`mvbench` 하나만) 먼저 — 3일 돌린 뒤 발견하는 것보다 10분 만에 발견하는 게 낫습니다.
 
-- `TASKS`: 쉼표로 구분한 task 이름 (생략 시 위 표의 8개 전부)
-- `CHECKPOINT`: HF 체크포인트 (생략 시 7B 기본값)
-
-### 예시
+### 4-1. LLaVA-OneVision (`llava` 환경)
 
 ```bash
-# LLaVA-OneVision 7B로 Video-MME (자막 없음/있음) 평가
+conda activate llava
+bash scripts/run_llava_onevision.sh mvbench                    # 스모크 테스트
 bash scripts/run_llava_onevision.sh videomme,videomme_w_subtitle
+```
 
-# LLaVA-Video 7B로 MLVU 평가
+- 기본 설정: 7B 체크포인트, 32프레임, `conv_template=qwen_1_5`.
+- 프레임 수를 바꾸려면 스크립트의 `max_frames_num`을 수정 (OOM 시 16으로).
+
+### 4-2. LLaVA-Video (`llava` 환경)
+
+```bash
+conda activate llava
 bash scripts/run_llava_video.sh mlvu_dev
+```
 
-# Qwen2-VL 7B로 MVBench 평가
+- 기본 설정: 64프레임 + average spatial pooling (공식 평가 세팅).
+- LLaVA-OneVision과 같은 환경/의존성을 공유하므로 OneVision이 돌면 이것도 돕니다.
+
+### 4-3. Qwen2-VL (`videollm` 환경)
+
+```bash
+conda activate videollm
 bash scripts/run_qwen2_vl.sh mvbench
+```
 
-# Qwen2.5-VL 7B로 LongVideoBench + LVBench 평가
+- 기본 설정: `max_pixels=602112` (40GB OOM 방지용으로 낮춰둠), 32프레임.
+- OOM 시: `max_pixels=301056`, `max_num_frames=16`으로 낮추기. 해상도/프레임을 낮추면 점수가 약간 떨어질 수 있으나 실행은 됩니다.
+
+### 4-4. Qwen2.5-VL (`videollm` 환경)
+
+```bash
+conda activate videollm
 bash scripts/run_qwen2_5_vl.sh longvideobench_val_v,lvbench
-
-# Gemma 4 E2B로 Video-MME v2 평가
-bash scripts/run_gemma4.sh videomme_v2 google/gemma-4-E2B-it
-
-# Gemma 4 E4B로 전체 벤치마크 평가
-bash scripts/run_gemma4.sh "" google/gemma-4-E4B-it
-
-# 전 모델 × 전 벤치마크 (오래 걸립니다!)
-bash scripts/run_all.sh
 ```
 
-### 스크립트 없이 직접 실행하려면
+- 기본 설정: `max_pixels=1605632`, 32프레임. OOM 시 Qwen2-VL과 동일하게 낮추세요.
+- 장시간 비디오 벤치마크(LVBench 등)에서 특히 메모리를 많이 씁니다.
 
-스크립트는 결국 아래 형태의 명령을 실행합니다:
+### 4-5. Gemma 4 E2B / E4B (`videollm` 환경)
 
 ```bash
-accelerate launch --num_processes=1 -m lmms_eval \
-    --model qwen2_5_vl \
-    --model_args pretrained=Qwen/Qwen2.5-VL-7B-Instruct,max_pixels=1605632,max_num_frames=32 \
-    --tasks videomme \
-    --batch_size 1 \
-    --log_samples \
-    --output_path logs/qwen2_5_vl
+conda activate videollm
+bash scripts/run_gemma4.sh mvbench google/gemma-4-E2B-it       # E2B 스모크 테스트
+bash scripts/run_gemma4.sh "" google/gemma-4-E2B-it            # E2B 전체 벤치마크
+bash scripts/run_gemma4.sh "" google/gemma-4-E4B-it            # E4B 전체 벤치마크
 ```
 
-GPU가 여러 장이면 `--num_processes=N`으로 데이터 병렬 평가가 됩니다.
+- 이 레포의 **플러그인**(`gemma4_plugin/`)으로 동작합니다 — lmms-eval에 아직 Gemma 4 전용 래퍼가 없어서, gemma3 래퍼를 `AutoModelForMultimodalLM` 로딩에 맞게 수정해 entry-point로 등록한 것입니다. `setup.sh`가 자동 설치하며, 결과는 `logs/gemma-4-E2B-it/`처럼 체크포인트명으로 저장됩니다.
+- 플러그인 인식이 안 되면: `pip install -e gemma4_plugin` 재실행 후 1-4의 plugin OK 확인.
+- Gemma 4는 최신 transformers가 필요합니다. `llava` 환경에서 돌리면 안 됩니다.
+- E2B/E4B는 온디바이스 지향 모델이라 장시간 비디오 벤치마크에서 프레임 수 제한의 영향이 큽니다. 결과 해석 시 참고.
 
-### 결과 확인
+### 전 모델 일괄 실행
 
-- 콘솔에 최종 점수 테이블이 출력됩니다.
-- `logs/<model>/` 아래에 JSON 결과와 (`--log_samples` 덕분에) 샘플별 응답이 저장되어, 어떤 문제를 틀렸는지 분석할 수 있습니다.
+```bash
+bash scripts/run_all.sh    # 단, llava/videollm 환경 분리 때문에 LLaVA 계열은 llava 환경에서 별도 실행 필요
+```
 
 ---
 
-## 5. Gemma 4 플러그인
+## 5. 40GB GPU (A100 40G 등)로 가능한가?
 
-lmms-eval에는 아직 Gemma 4 전용 래퍼가 없어서, 이 레포에 **플러그인 패키지**(`gemma4_plugin/`)를 만들어 두었습니다. lmms-eval의 gemma3 래퍼를 기반으로, Gemma 4의 `AutoModelForMultimodalLM` 로딩 방식에 맞게 수정한 것입니다. lmms-eval의 entry-point 메커니즘(`lmms_eval.models` 그룹)으로 등록되므로, `pip install -e gemma4_plugin` 후에는 `--model gemma4`로 바로 사용할 수 있습니다.
-
-```bash
-pip install -e gemma4_plugin   # setup.sh에 포함되어 있음
-bash scripts/run_gemma4.sh videomme google/gemma-4-E4B-it
-```
-
-플러그인 등록이 안 되는 (구버전 lmms-eval 등) 경우의 수동 설치 방법:
-
-```bash
-# gemma4.py를 lmms-eval 패키지 안에 직접 복사
-LMMS=$(python -c "import lmms_eval, os; print(os.path.dirname(lmms_eval.__file__))")
-cp gemma4_plugin/gemma4_lmms/gemma4.py $LMMS/models/simple/gemma4.py
-# 이후 $LMMS/models/__init__.py 의 simple 모델 레지스트리 dict에 "gemma4": "Gemma4" 한 줄 추가
-```
-
-또 다른 대안으로, vLLM이 Gemma 4를 지원하는 버전이라면 lmms-eval의 범용 vllm 래퍼도 사용할 수 있습니다:
-
-```bash
-python -m lmms_eval --model vllm --model_args model=google/gemma-4-E4B-it --tasks videomme ...
-```
-
-> 참고: Gemma 4 E2B/E4B는 비디오를 프레임 시퀀스로 처리하며(초당 1프레임 기준 약 60초 분량 권장), 온디바이스 지향 모델이라 장시간 비디오 벤치마크(LVBench 등)에서는 프레임 수 제한의 영향이 큽니다. 결과 해석 시 참고하세요.
-
----
-
-## 6. 40GB GPU (A100 40G 등)로 가능한가?
-
-**결론: 이 레포의 기본 설정(7B급 + E2B/E4B)은 전부 40GB 한 장으로 가능합니다.** 각 모델의 bf16 weight가 6~17GB라 여유가 있고, 관건은 weight가 아니라 **비디오 프레임이 만드는 visual token 수**입니다.
+**결론: 이 레포의 기본 설정(7B급 + E2B/E4B)은 전부 40GB 한 장으로 가능합니다.** 관건은 weight(6~17GB)가 아니라 **비디오 프레임이 만드는 visual token 수**입니다.
 
 | 모델 | Weight (bf16) | 40GB 가능? | 비고 |
 |---|---|---|---|
-| LLaVA-OneVision 7B | ~16GB | ✅ | `max_frames_num=32` 기본. 여유 있음 |
-| LLaVA-Video 7B | ~16GB | ✅ | `max_frames_num=64`도 OK (spatial pooling 덕분) |
-| Qwen2-VL 7B | ~16GB | ✅ | `max_pixels`를 낮춘 상태(602112)로 실행. 기본값 그대로 장시간 비디오를 넣으면 OOM 가능 |
-| Qwen2.5-VL 7B | ~17GB | ✅ | 동일. OOM 시 `max_pixels`/`max_num_frames` ↓ |
+| LLaVA-OneVision 7B | ~16GB | ✅ | 32프레임 기본. 여유 있음 |
+| LLaVA-Video 7B | ~16GB | ✅ | 64프레임도 OK (spatial pooling 덕분) |
+| Qwen2-VL 7B | ~16GB | ✅ | `max_pixels` 낮춘 상태로 실행 |
+| Qwen2.5-VL 7B | ~17GB | ✅ | OOM 시 `max_pixels`/프레임 ↓ |
 | Gemma 4 E2B | ~6GB | ✅ | 매우 여유 |
 | Gemma 4 E4B | ~16GB | ✅ | 여유 |
 
-- **OOM이 나면**: 스크립트의 `max_num_frames`(32→16), Qwen 계열은 `max_pixels`(예: 602112→301056)를 낮추세요. 점수가 약간 떨어질 수 있지만 실행은 됩니다.
-- **불가능한 것**: 72B/32B급 체크포인트(예: `Qwen2-VL-72B`, `llava-onevision-qwen2-72b-ov`)는 40GB 한 장으로는 4bit 양자화 없이는 불가능합니다. 이 레포 기본 스크립트에서는 다루지 않습니다.
-- 장시간 비디오 벤치마크(LVBench, MLVU, LongVideoBench)는 메모리보다 **시간**이 병목입니다. 벤치마크 하나에 수 시간~하루 이상 걸릴 수 있으니 `tmux`/`nohup` 사용을 권장합니다.
+- **불가능한 것**: 72B/32B급 체크포인트는 40GB 한 장으로는 4bit 양자화 없이 불가.
+- 장시간 비디오 벤치마크(LVBench, MLVU, LongVideoBench)는 메모리보다 **시간**이 병목 — 벤치마크 하나에 수 시간~하루 이상. 같은 GPU에 두 모델을 동시에 올리지 마세요 (OOM).
 
 ---
 
-## 7. 트러블슈팅
+## 6. 트러블슈팅 (전부 실제로 겪은 에러들)
 
-| 증상 | 해결 |
-|---|---|
-| `decord` 관련 에러 | `pip install decord` (Mac/ARM은 `eva-decord`) |
-| LLaVA 모델 로딩 실패 (`llava` import 에러) | `pip install git+https://github.com/LLaVA-VL/LLaVA-NeXT.git` 재설치 |
-| `cannot import name 'apply_chunking_to_forward'` | transformers가 너무 최신 — 위 1번 섹션대로 LLaVA 전용 환경에서 `transformers==4.40.0`으로 고정 |
-| 401/403 다운로드 에러 | `hf auth login` + 해당 HF 페이지에서 약관 동의 |
-| CUDA OOM | 위 6번 섹션의 프레임/해상도 축소 참고 |
-| flash-attn 빌드 실패 | 필수 아님. `attn_implementation`을 지정하지 않으면 sdpa로 동작 |
-| 디스크 부족 | `export HF_HOME=<큰 디스크>` 후 재실행, 벤치마크별로 받고 지우기 |
+| 증상 | 원인 | 해결 |
+|---|---|---|
+| `PermissionError: [Errno 13] '/data'` | HF_HOME 경로에 쓰기 권한 없음 | `sudo chown -R $USER <경로>` 또는 쓰기 가능한 경로로 HF_HOME 변경 ([1-0](#1-0-hf_home-먼저-정하기-중요)) |
+| `CondaToSNonInteractiveError` | Anaconda 기본 채널 약관 미동의 | `conda tos accept ...` 또는 conda-forge 사용 ([1-1](#1-1-conda-환경--videollm-qwen2-vl--qwen25-vl--gemma-4)) |
+| `cannot import name 'apply_chunking_to_forward'` | transformers가 LLaVA-NeXT 기준으로 너무 최신 | `llava` 환경에서 `transformers==4.40.0` 고정 ([1-2](#1-2-conda-환경--llava-llava-onevision--llava-video)) |
+| pip "dependency resolver" 빨간 경고 | 미사용 패키지(sentence-transformers 등)의 버전 불평 | **무시**. 기준은 1-4 import 체크리스트 통과 여부 |
+| `RuntimeError: NVIDIA driver ... too old` | torch가 드라이버보다 새 CUDA로 빌드됨 | 드라이버에 맞는 빌드 재설치 (예: `--index-url .../whl/cu124`) ([1-3](#1-3-pytorch--cuda-드라이버-맞추기)) |
+| `LocalTokenNotFoundError` | HF 미로그인, 또는 로그인한 셸과 HF_HOME 불일치 | HF_HOME 고정 후 그 셸에서 `hf auth login` ([1-5](#1-5-huggingface-로그인)) |
+| `HfHubHTTPError` / `RetryError` | 대부분 위와 동일(토큰 401), 또는 gated 약관 미동의 | `hf auth whoami` 확인 → 안 되면 `--verbosity=DEBUG`로 HTTP 코드 확인 |
+| 받아둔 데이터셋이 안 보임 / 재다운로드 시작 | 셸마다 HF_HOME이 다름 | `hf cache scan`으로 실제 캐시 위치 확인 후 `.bashrc`에 HF_HOME 고정 |
+| `EnvironmentNameNotFound` (source ~/.bashrc 시) | `.bashrc`에 존재하지 않는 conda 환경 activate 줄 | 해당 줄 삭제: `sed -i '/conda activate <이름>/d' ~/.bashrc` |
+| `git clone ... 실패` (pip install git+...) | URL에서 org 부분(`LLaVA-VL/`) 누락 | 명령을 그대로 복사해서 실행 |
+| CUDA OOM | 비디오 프레임 토큰 과다 | `max_num_frames`/`max_pixels` 낮추기 ([5](#5-40gb-gpu-a100-40g-등로-가능한가)) |
+| `decord` 에러 | 미설치 | `pip install decord` |
+| 디스크 부족 | 데이터셋 용량 | 순환 방식 + `hf cache delete` ([2](#2-데이터셋-다운로드)) |
+
+### tmux 최소 사용법
+
+```bash
+tmux new -s eval          # 세션 생성
+# Ctrl+b "  → 위아래 분할 | Ctrl+b %  → 좌우 분할 | Ctrl+b 방향키 → 창 이동
+# Ctrl+b z  → 현재 창 확대 토글 | Ctrl+b d → 세션에서 나가기(작업은 계속 돌아감)
+tmux attach -t eval       # 재접속
+tmux set -g mouse on      # 마우스로 창 전환/크기조절/스크롤 (복사는 Shift+드래그)
+```
+
+**tmux 새 창을 열면**: `HF_HOME`은 `.bashrc` 덕에 자동으로 잡히지만, **conda 환경은 매번 직접 activate** 해야 합니다.
 
 ## 라이선스 / 출처
 
