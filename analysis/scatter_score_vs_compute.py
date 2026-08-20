@@ -67,8 +67,18 @@ def load_compute():
     return compute
 
 
+# 초기 실행분의 일반 폴더명 → 체크포인트 이름 별칭 (로그 체계 변경 전 실행분 대응)
+ALIAS = {
+    "llava_onevision": "llava-onevision-qwen2-7b-ov",
+    "llava_video": "LLaVA-Video-7B-Qwen2",
+    "qwen2_vl": "Qwen2-VL-7B-Instruct",
+    "qwen2_5_vl": "Qwen2.5-VL-7B-Instruct",
+    "qwen3_vl": "Qwen3-VL-8B-Instruct",
+}
+
+
 def norm(name):  # logs 폴더명 ↔ latency pretrained basename 매칭
-    return name.lower().replace("_", "-")
+    return ALIAS.get(name, name).lower().replace("_", "-")
 
 
 def main():
