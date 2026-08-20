@@ -378,6 +378,7 @@ A100 40G 1장, 이 레포의 기본 스크립트 설정으로 측정한 결과�
 
 | 모델 | MVBench | Video-MME (w/o sub) | Video-MME (w/ sub) | Video-MME v2 | v2 (w/ sub) | LongVideoBench | LVBench | MLVU |
 |---|---|---|---|---|---|---|---|---|
+| LLaVA-OneVision 0.5B | **46.63** (45.5) | | | | | | | |
 | LLaVA-OneVision 7B | **58.35** (56.7) | | | | | | | |
 | LLaVA-Video 7B | **60.38** (58.6) | | | | | | | |
 | Qwen2-VL 7B | **66.30** (67.0) | | | | | | | |
