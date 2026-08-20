@@ -397,6 +397,10 @@ python latency/profile_latency.py --family internvl3 \
 - `--num_frames`(기본 32), `--max_new_tokens`(기본 32), `--seed`(기본 42 — 모델 간 같은 샘플로 비교됨) 조절 가능.
 - vision/projector 모듈을 못 찾는 모델이면 `[warn]`을 출력하고 해당 시간은 prefill에 합산된 채 측정됩니다.
 
+## 8. Token 압축 Ablation
+
+비주얼 토큰을 PCA/풀링/ToMe/k-means 등으로 압축했을 때의 정확도 열화를 방법 × 유지 비율로 스윕하고, temporal vs spatial 태스크의 취약성 차이를 분석하는 실험 — **[token_analysis/](token_analysis/) 참고** (설계, 실행법, 관련 연구 정리 포함).
+
 ## 결과 (진행 중)
 
 A100 40G 1장, 이 레포의 기본 스크립트 설정으로 측정한 결과입니다. 괄호는 공식 보고치.
