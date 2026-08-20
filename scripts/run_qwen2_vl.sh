@@ -11,4 +11,4 @@ CKPT="${2:-Qwen/Qwen2-VL-7B-Instruct}"
 # max_pixels=602112: 40GB GPU에서 장시간 비디오 OOM 방지용 (OOM 시 더 낮추세요)
 run_eval qwen2_vl \
   "pretrained=${CKPT},max_pixels=602112,max_num_frames=32" \
-  "$TASKS" "logs/qwen2_vl"
+  "$TASKS" "logs/$(basename "$CKPT")"

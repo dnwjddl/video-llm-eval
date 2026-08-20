@@ -12,4 +12,4 @@ CKPT="${2:-Qwen/Qwen2.5-VL-7B-Instruct}"
 # 작업과 공유하고 있지 않은지 확인하고, 그래도 나면 max_pixels=602112로 낮추세요
 run_eval qwen2_5_vl \
   "pretrained=${CKPT},max_pixels=1605632,max_num_frames=32" \
-  "$TASKS" "logs/qwen2_5_vl"
+  "$TASKS" "logs/$(basename "$CKPT")"

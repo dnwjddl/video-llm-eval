@@ -11,4 +11,4 @@ CKPT="${2:-lmms-lab/LLaVA-Video-7B-Qwen2}"
 # 공식 평가 세팅: 64프레임 + average spatial pooling
 run_eval llava_vid \
   "pretrained=${CKPT},conv_template=qwen_1_5,max_frames_num=64,mm_spatial_pool_mode=average,video_decode_backend=decord" \
-  "$TASKS" "logs/llava_video"
+  "$TASKS" "logs/$(basename "$CKPT")"

@@ -11,4 +11,4 @@ CKPT="${2:-lmms-lab/llava-onevision-qwen2-7b-ov}"
 
 run_eval llava_onevision \
   "pretrained=${CKPT},conv_template=qwen_1_5,model_name=llava_qwen,max_frames_num=32" \
-  "$TASKS" "logs/llava_onevision"
+  "$TASKS" "logs/$(basename "$CKPT")"
