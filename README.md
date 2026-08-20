@@ -314,12 +314,14 @@ A100 40G 1장, 이 레포의 기본 스크립트 설정으로 측정한 결과�
 
 두 모델 모두 공식 보고치 대비 +1.7점 내외로 일관되게 측정됨 — 프레임 수/프롬프트 세부 설정 차이에 의한 정상 범위 편차.
 
-### 점수 추출 명령
+### 점수 추출
 
 ```bash
-# logs 아래 가장 최근 결과에서 MVBench 전체 평균 계산 (경로를 좁히려면 logs/<모델폴더>/** 로)
-python -c "import json,glob; f=sorted(glob.glob('logs/**/*results.json', recursive=True))[-1]; r=json.load(open(f))['results']; vals=[next(v for k,v in m.items() if 'stderr' not in k and isinstance(v,(int,float))) for t,m in r.items() if t.startswith('mvbench_')]; print(f); print('MVBench overall:', round(sum(vals)/len(vals),4), '(',len(vals),'subtasks )')"
+bash scripts/score.sh              # 모든 모델/벤치마크 결과 요약
+bash scripts/score.sh qwen2_vl     # 경로에 qwen2_vl이 들어간 결과만
 ```
+
+logs/ 아래 모든 결과 파일에서 벤치마크별 점수를 뽑아주고, MVBench는 서브태스크 20개 평균(= 최종 점수)을 `>>` 줄로 자동 계산합니다.
 
 ## 라이선스 / 출처
 
