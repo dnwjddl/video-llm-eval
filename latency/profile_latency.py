@@ -154,8 +154,16 @@ def load_hf(family, pretrained):
             from transformers import AutoModelForImageTextToText as Cls
     else:
         from transformers import AutoModelForImageTextToText as Cls
+    kwargs = {}
+    try:
+        import flash_attn  # noqa: F401
+
+        kwargs["attn_implementation"] = "flash_attention_2"
+        print("flash-attn 감지 → flash_attention_2 사용")
+    except ImportError:
+        pass
     t0 = time.perf_counter()
-    model = Cls.from_pretrained(pretrained, torch_dtype=torch.bfloat16, device_map="cuda").eval()
+    model = Cls.from_pretrained(pretrained, torch_dtype=torch.bfloat16, device_map="cuda", **kwargs).eval()
     processor = AutoProcessor.from_pretrained(pretrained)
     load_s = time.perf_counter() - t0
     return model, processor, load_s
@@ -444,6 +452,30 @@ def main():
     fwd_target = model.language_model if args.family in INTERNVL_FAMILIES and hasattr(model, "language_model") else model
     pd = PrefillDecodeTimer(fwd_target, ht, nested_keys=["vision", "proj", "proj_nested"])
 
+    out = args.out or f"latency_results/{os.path.basename(args.pretrained)}_{args.dataset}.json"
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+
+    def build_report(results):
+        report = {"family": args.family, "pretrained": args.pretrained, "dataset": args.dataset,
+                  "num_frames": args.num_frames, "max_new_tokens": args.max_new_tokens,
+                  "checkpoint_load_s": round(load_s, 2), "per_duration": {}}
+        all_recs = []
+        for dur in ("short", "medium", "long"):
+            recs = results.get(dur, [])
+            all_recs += recs
+            if recs:
+                report["per_duration"][dur] = {
+                    "n": len(recs),
+                    **{s: round(sum(r.get(s, 0.0) for r in recs) / len(recs), 4) for s in STAGES},
+                    "mean_generated_tokens": round(sum(r.get("n_generated_tokens", 0) for r in recs) / len(recs), 1),
+                }
+        if all_recs:
+            report["overall"] = {
+                "n": len(all_recs),
+                **{s: round(sum(r.get(s, 0.0) for r in all_recs) / len(all_recs), 4) for s in STAGES},
+            }
+        return report
+
     results = defaultdict(list)
     skipped = 0
     for dur, rows in samples.items():
@@ -460,39 +492,23 @@ def main():
                 run_sample(model, proc, frames, row["prompt"], args.max_new_tokens, ht, pd, rec)
             except torch.cuda.OutOfMemoryError:
                 torch.cuda.empty_cache()
-                print(f"[oom] {dur} #{i} {row['videoID']} — 건너뜀")
+                print(f"[oom] {dur} #{i} {row['videoID']} — 건너뜀", flush=True)
                 skipped += 1
                 continue
             except Exception as e:
-                print(f"[err] {dur} #{i} {row['videoID']}: {type(e).__name__}: {e}")
+                print(f"[err] {dur} #{i} {row['videoID']}: {type(e).__name__}: {e}", flush=True)
                 skipped += 1
                 continue
             results[dur].append(rec)
-            if (i + 1) % 10 == 0:
-                print(f"{dur}: {i + 1}/{len(rows)}")
+            total = sum(rec.get(s, 0.0) for s in STAGES)
+            print(f"{dur} {i + 1}/{len(rows)}: {total:.1f}s/sample", flush=True)
+            # 매 샘플 후 중간 저장 — 중간에 중단해도 지금까지의 평균으로 plot 가능
+            json.dump(build_report(results), open(out, "w"), indent=2, ensure_ascii=False)
 
     if skipped:
-        print(f"\n[warn] {skipped}개 샘플 건너뜀 (비디오 파일 없음/에러)")
+        print(f"\n[warn] {skipped}개 샘플 건너뜀 (비디오 파일 없음/에러)", flush=True)
 
-    # 집계 + 출력
-    report = {"family": args.family, "pretrained": args.pretrained, "dataset": args.dataset,
-              "num_frames": args.num_frames, "max_new_tokens": args.max_new_tokens,
-              "checkpoint_load_s": round(load_s, 2), "per_duration": {}}
-    all_recs = []
-    for dur in ("short", "medium", "long"):
-        recs = results.get(dur, [])
-        all_recs += recs
-        if recs:
-            report["per_duration"][dur] = {
-                "n": len(recs),
-                **{s: round(sum(r.get(s, 0.0) for r in recs) / len(recs), 4) for s in STAGES},
-                "mean_generated_tokens": round(sum(r.get("n_generated_tokens", 0) for r in recs) / len(recs), 1),
-            }
-    if all_recs:
-        report["overall"] = {
-            "n": len(all_recs),
-            **{s: round(sum(r.get(s, 0.0) for r in all_recs) / len(all_recs), 4) for s in STAGES},
-        }
+    report = build_report(results)
 
     print(f"\n===== latency breakdown (평균, 초/샘플) — {args.pretrained} =====")
     header = ["stage"] + [d for d in ("short", "medium", "long") if d in report["per_duration"]] + ["overall"]
@@ -505,8 +521,6 @@ def main():
         row.append(f"{report.get('overall', {}).get(s, 0.0):>24.4f}")
         print("  ".join(row))
 
-    out = args.out or f"latency_results/{os.path.basename(args.pretrained)}_{args.dataset}.json"
-    os.makedirs(os.path.dirname(out), exist_ok=True)
     json.dump(report, open(out, "w"), indent=2, ensure_ascii=False)
     print(f"\nsaved: {out}")
 

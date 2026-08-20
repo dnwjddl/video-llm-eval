@@ -40,7 +40,7 @@ run_one() {
   echo "############ [$env] $family — $ckpt ############"
   local py
   py=$(env_python "$env") || { echo "!! conda 환경 '$env'의 python을 찾지 못했습니다 — 건너뜀"; return; }
-  "$py" latency/profile_latency.py \
+  "$py" -u latency/profile_latency.py \
       --family "$family" --pretrained "$ckpt" \
       --dataset videomme --video_dir "$VIDEO_DIR" --n_per_duration 50 2>&1 | tee "$log"
   if [ "${PIPESTATUS[0]}" -eq 0 ]; then
