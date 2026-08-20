@@ -22,7 +22,8 @@ esac
 
 # modality=video: 비디오 벤치마크 필수 설정
 # flash-attn은 설치되어 있으면 자동으로 켜고, 없으면 끕니다
-ARGS="pretrained=${CKPT},modality=video,num_frame=32"
+# OOM 시: NUM_FRAME=16 bash scripts/run_internvl.sh ... 로 프레임 수 축소
+ARGS="pretrained=${CKPT},modality=video,num_frame=${NUM_FRAME:-32}"
 if [ "$MODEL" != "internvl2" ]; then
   if python -c "import flash_attn" 2>/dev/null; then
     echo "flash-attn 감지됨 → use_flash_attn=True"
