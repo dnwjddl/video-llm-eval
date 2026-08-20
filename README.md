@@ -299,6 +299,28 @@ tmux set -g mouse on      # 마우스로 창 전환/크기조절/스크롤 (복�
 
 **tmux 새 창을 열면**: `HF_HOME`은 `.bashrc` 덕에 자동으로 잡히지만, **conda 환경은 매번 직접 activate** 해야 합니다.
 
+## 결과 (진행 중)
+
+A100 40G 1장, 이 레포의 기본 스크립트 설정으로 측정한 결과입니다. 괄호는 공식 보고치.
+
+| 모델 | MVBench | Video-MME (w/o sub) | Video-MME (w/ sub) | Video-MME v2 | v2 (w/ sub) | LongVideoBench | LVBench | MLVU |
+|---|---|---|---|---|---|---|---|---|
+| LLaVA-OneVision 7B | **58.35** (56.7) | | | | | | | |
+| LLaVA-Video 7B | **60.38** (58.6) | | | | | | | |
+| Qwen2-VL 7B | | | | | | | | |
+| Qwen2.5-VL 7B | | | | | | | | |
+| Gemma 4 E2B | | | | | | | | |
+| Gemma 4 E4B | | | | | | | | |
+
+두 모델 모두 공식 보고치 대비 +1.7점 내외로 일관되게 측정됨 — 프레임 수/프롬프트 세부 설정 차이에 의한 정상 범위 편차.
+
+### 점수 추출 명령
+
+```bash
+# logs 아래 가장 최근 결과에서 MVBench 전체 평균 계산 (경로를 좁히려면 logs/<모델폴더>/** 로)
+python -c "import json,glob; f=sorted(glob.glob('logs/**/*results.json', recursive=True))[-1]; r=json.load(open(f))['results']; vals=[next(v for k,v in m.items() if 'stderr' not in k and isinstance(v,(int,float))) for t,m in r.items() if t.startswith('mvbench_')]; print(f); print('MVBench overall:', round(sum(vals)/len(vals),4), '(',len(vals),'subtasks )')"
+```
+
 ## 라이선스 / 출처
 
 - 평가 하니스: [lmms-eval](https://github.com/EvolvingLMMs-Lab/lmms-eval) (Apache 2.0 기반)
