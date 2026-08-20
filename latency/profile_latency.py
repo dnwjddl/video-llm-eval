@@ -44,9 +44,10 @@ STAGES = [
 
 HF_FAMILIES = ("qwen2_vl", "qwen2_5_vl", "qwen3_vl", "gemma4")
 LLAVA_FAMILIES = ("llava_onevision", "llava_vid")
+INTERNVL_FAMILIES = ("internvl2", "internvl2_5", "internvl3", "internvl3_5")
 
 VISION_CANDIDATES = ["visual", "model.visual", "vision_tower", "model.vision_tower", "vision_model", "model.vision_model"]
-PROJ_CANDIDATES = ["visual.merger", "model.visual.merger", "multi_modal_projector", "model.multi_modal_projector", "mm_projector", "model.mm_projector", "embed_vision", "model.embed_vision"]
+PROJ_CANDIDATES = ["visual.merger", "model.visual.merger", "multi_modal_projector", "model.multi_modal_projector", "mm_projector", "model.mm_projector", "mlp1", "model.mlp1", "embed_vision", "model.embed_vision"]
 
 
 def now():
@@ -264,6 +265,67 @@ def run_sample_llava(model, proc, frames, question, max_new_tokens, hook_timer, 
     return answer
 
 
+# ----------------------------------------------------------- InternVL models
+
+
+def load_internvl(family, pretrained):
+    from transformers import AutoModel, AutoTokenizer
+
+    t0 = time.perf_counter()
+    model = AutoModel.from_pretrained(
+        pretrained, torch_dtype=torch.bfloat16, trust_remote_code=True,
+        low_cpu_mem_usage=True, device_map="cuda",
+    ).eval()
+    tokenizer = AutoTokenizer.from_pretrained(pretrained, trust_remote_code=True, use_fast=False)
+    load_s = time.perf_counter() - t0
+    return model, tokenizer, load_s
+
+
+def run_sample_internvl(model, tokenizer, frames, question, max_new_tokens, hook_timer, pd_timer, rec):
+    import torchvision.transforms as T
+    from PIL import Image
+
+    transform = T.Compose([
+        T.Resize((448, 448), interpolation=T.InterpolationMode.BICUBIC),
+        T.ToTensor(),
+        T.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+    ])
+
+    t0 = time.perf_counter()
+    pixel_values = torch.stack([transform(Image.fromarray(f).convert("RGB")) for f in frames])
+    rec["video_preprocess"] = time.perf_counter() - t0
+    pixel_values = pixel_values.to(torch.bfloat16).to(model.device)
+    num_patches_list = [1] * len(frames)
+
+    video_prefix = "".join(f"Frame{i + 1}: <image>\n" for i in range(len(frames)))
+    q = video_prefix + question
+
+    t0 = time.perf_counter()
+    tokenizer(q, return_tensors="pt")
+    rec["text_tokenization"] = time.perf_counter() - t0
+
+    hook_timer.reset()
+    pd_timer.reset()
+    response = model.chat(
+        tokenizer, pixel_values, q,
+        dict(max_new_tokens=max_new_tokens, do_sample=False),
+        num_patches_list=num_patches_list,
+    )
+
+    rec["vision_encoder"] = hook_timer.total.get("vision", 0.0) - hook_timer.total.get("proj_nested", 0.0)
+    rec["projector"] = hook_timer.total.get("proj_nested", 0.0) + hook_timer.total.get("proj", 0.0)
+    rec["llm_prefill"] = pd_timer.prefill
+    rec["autoregressive_decode"] = pd_timer.decode
+
+    # chat()이 디코딩까지 내부에서 수행하므로, 같은 텍스트 재디코딩으로 근사 측정
+    out_ids = tokenizer(response, return_tensors="pt").input_ids[0]
+    t0 = time.perf_counter()
+    tokenizer.decode(out_ids, skip_special_tokens=True)
+    rec["detokenization"] = time.perf_counter() - t0
+    rec["n_generated_tokens"] = int(out_ids.shape[0])
+    return response
+
+
 # -------------------------------------------------------------------- data
 
 
@@ -323,7 +385,7 @@ def index_videos(video_dir):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--family", required=True, choices=HF_FAMILIES + LLAVA_FAMILIES)
+    ap.add_argument("--family", required=True, choices=HF_FAMILIES + LLAVA_FAMILIES + INTERNVL_FAMILIES)
     ap.add_argument("--pretrained", required=True)
     ap.add_argument("--dataset", default="videomme", choices=["videomme", "videomme_v2"])
     ap.add_argument("--video_dir", required=True, help="비디오 파일들이 풀려 있는 디렉토리 (재귀 탐색)")
@@ -341,6 +403,9 @@ def main():
     if args.family in LLAVA_FAMILIES:
         model, proc, load_s = load_llava(args.family, args.pretrained)
         run_sample = run_sample_llava
+    elif args.family in INTERNVL_FAMILIES:
+        model, proc, load_s = load_internvl(args.family, args.pretrained)
+        run_sample = run_sample_internvl
     else:
         model, proc, load_s = load_hf(args.family, args.pretrained)
         run_sample = run_sample_hf
@@ -367,7 +432,10 @@ def main():
     else:
         print("[warn] projector 모듈을 찾지 못했습니다 — projector 시간은 vision/prefill에 포함됩니다")
 
-    pd = PrefillDecodeTimer(model, ht, nested_keys=["vision", "proj", "proj_nested"])
+    # prefill/decode 훅 대상: InternVL은 chat()이 내부 LLM의 generate를 부르므로
+    # language_model에 걸어야 스텝별 forward가 잡힌다
+    fwd_target = model.language_model if args.family in INTERNVL_FAMILIES and hasattr(model, "language_model") else model
+    pd = PrefillDecodeTimer(fwd_target, ht, nested_keys=["vision", "proj", "proj_nested"])
 
     results = defaultdict(list)
     skipped = 0

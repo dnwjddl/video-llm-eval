@@ -14,6 +14,28 @@ import json
 import os
 import sys
 
+
+class _Tee:
+    """stdout을 화면과 파일에 동시 기록 — 결과를 git push로 공유할 수 있게."""
+
+    def __init__(self, path):
+        self.file = open(path, "w")
+        self.stdout = sys.stdout
+
+    def write(self, s):
+        self.stdout.write(s)
+        self.file.write(s)
+
+    def flush(self):
+        self.stdout.flush()
+        self.file.flush()
+
+
+OUT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gemma4_debug_output.txt")
+sys.stdout = _Tee(OUT_PATH)
+sys.stderr = sys.stdout
+print(f"(이 출력은 {OUT_PATH} 에도 저장됩니다 — bash scripts/send_debug.sh 로 공유)")
+
 print("=" * 70)
 print("[1] 모델 응답 샘플 확인")
 print("=" * 70)

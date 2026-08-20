@@ -373,7 +373,14 @@ python latency/profile_latency.py --family qwen2_5_vl \
 python latency/profile_latency.py --family llava_onevision \
     --pretrained lmms-lab/llava-onevision-qwen2-7b-ov \
     --dataset videomme --video_dir ~/videomme_videos --n_per_duration 50
+
+# InternVL 계열 (videollm 환경, 구세대는 llava 환경 폴백): internvl2 | internvl2_5 | internvl3 | internvl3_5
+python latency/profile_latency.py --family internvl3 \
+    --pretrained OpenGVLab/InternVL3-8B \
+    --dataset videomme --video_dir ~/videomme_videos --n_per_duration 50
 ```
+
+전체 baseline 커버: LLaVA-OneVision(0.5B/7B), LLaVA-Video, Qwen2-VL, Qwen2.5-VL, Qwen3-VL, Gemma 4 E2B/E4B, InternVL2/2.5/3/3.5 — `--family`와 `--pretrained`만 바꿔가며 실행하면 `latency_results/`에 쌓이고, `python latency/plot_latency.py`가 전부 한 차트로 그립니다.
 
 - 결과: 콘솔에 short/medium/long/overall별 단계 평균 표 + `latency_results/<모델>_<데이터셋>.json` 저장.
 - `--num_frames`(기본 32), `--max_new_tokens`(기본 32), `--seed`(기본 42 — 모델 간 같은 샘플로 비교됨) 조절 가능.
