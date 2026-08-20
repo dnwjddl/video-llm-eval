@@ -155,13 +155,17 @@ def load_hf(family, pretrained):
     else:
         from transformers import AutoModelForImageTextToText as Cls
     kwargs = {}
-    try:
-        import flash_attn  # noqa: F401
+    if family == "gemma4":
+        # Gemma 4는 head dim > 256이라 flash-attn 미지원 → sdpa 고정
+        kwargs["attn_implementation"] = "sdpa"
+    else:
+        try:
+            import flash_attn  # noqa: F401
 
-        kwargs["attn_implementation"] = "flash_attention_2"
-        print("flash-attn 감지 → flash_attention_2 사용")
-    except ImportError:
-        pass
+            kwargs["attn_implementation"] = "flash_attention_2"
+            print("flash-attn 감지 → flash_attention_2 사용")
+        except ImportError:
+            pass
     t0 = time.perf_counter()
     model = Cls.from_pretrained(pretrained, torch_dtype=torch.bfloat16, device_map="cuda", **kwargs).eval()
     processor = AutoProcessor.from_pretrained(pretrained)

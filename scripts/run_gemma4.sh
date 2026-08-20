@@ -14,13 +14,8 @@ NAME="$(basename "$CKPT")"
 # (MVBench 27.5점 사건) letter-only 답변을 강제. 쉼표 금지 — model_args 파싱이 깨짐.
 SYS="You are a helpful assistant. For multiple-choice questions you must answer with only the letter of the best option (e.g. A or B). Never explain and never refuse - always pick the single best option even if you are unsure."
 
-# flash-attn이 설치돼 있으면 자동으로 사용 (없으면 transformers 기본값)
-ATTN=""
-if python -c "import flash_attn" 2>/dev/null; then
-  echo "flash-attn 감지 → flash_attention_2 사용"
-  ATTN=",attn_implementation=flash_attention_2"
-fi
-
+# 주의: Gemma 4는 head dim이 256을 넘어 flash-attn 미지원
+# ("Flash Attention forward only supports head dimension at most 256") → sdpa 고정
 run_eval gemma4 \
-  "pretrained=${CKPT},max_num_frames=32,system_prompt=${SYS}${ATTN}" \
+  "pretrained=${CKPT},max_num_frames=32,system_prompt=${SYS},attn_implementation=sdpa" \
   "$TASKS" "logs/${NAME}"
