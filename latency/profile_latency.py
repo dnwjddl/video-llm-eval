@@ -214,10 +214,17 @@ def load_llava(family, pretrained):
     from llava.model.builder import load_pretrained_model
 
     overwrite = {"mm_spatial_pool_mode": "average"} if family == "llava_vid" else None
+    # flash-attn 미설치 환경 대비: llava 로더 기본값(flash_attention_2) 대신 sdpa 사용
+    try:
+        import flash_attn  # noqa: F401
+        attn = "flash_attention_2"
+    except ImportError:
+        attn = "sdpa"
     t0 = time.perf_counter()
     tokenizer, model, image_processor, _ = load_pretrained_model(
         pretrained, None, "llava_qwen", device_map="cuda",
         torch_dtype="bfloat16", overwrite_config=overwrite,
+        attn_implementation=attn,
     )
     model.eval()
     load_s = time.perf_counter() - t0
