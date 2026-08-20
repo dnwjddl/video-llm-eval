@@ -321,6 +321,7 @@ MVBench 4,000문항 기준 실측 wall-clock입니다 (1회 측정치라 오차 
 | `git clone ... 실패` (pip install git+...) | URL에서 org 부분(`LLaVA-VL/`) 누락 | 명령을 그대로 복사해서 실행 |
 | CUDA OOM | 비디오 프레임 토큰 과다 | `max_num_frames`/`max_pixels` 낮추기 ([5](#5-40gb-gpu-a100-40g-등로-가능한가)) |
 | `decord` 에러 | 미설치 | `pip install decord` |
+| 객관식 점수가 무작위(25%) 이하 | 모델이 letter 대신 설명/거절로 답해 채점기의 letter 추출 실패 (Gemma 4에서 발생 — 어시스턴트형 튜닝 모델의 흔한 함정) | 시스템 프롬프트로 letter-only 답변 강제 (`run_gemma4.sh` 참고). 샘플 로그의 원문 답변을 열어 형식부터 확인할 것 |
 | 디스크 부족 | 데이터셋 용량 | 순환 방식 + `hf cache delete` ([2](#2-데이터셋-다운로드)) |
 
 ### tmux 최소 사용법
@@ -396,7 +397,7 @@ A100 40G 1장, 이 레포의 기본 스크립트 설정으로 측정한 결과�
 | LLaVA-OneVision 7B | **58.35** (56.7) | | | | | | | |
 | LLaVA-Video 7B | **60.38** (58.6) | | | | | | | |
 | Qwen2-VL 7B | **66.30** (67.0) | | | | | | | |
-| Qwen2.5-VL 7B | | | | | | | | |
+| Qwen2.5-VL 7B | **67.63** (69.6) | | | | | | | |
 | Gemma 4 E2B | | | | | | | | |
 | Gemma 4 E4B | | | | | | | | |
 
