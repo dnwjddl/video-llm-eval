@@ -344,7 +344,14 @@ tmux set -g mouse on      # 마우스로 창 전환/크기조절/스크롤 (복�
 
 ### 준비: 비디오 파일 풀어두기
 
-프로파일러는 평가 캐시와 별개로 mp4 폴더를 직접 읽습니다. HF 스냅샷의 zip을 풀어두세요:
+프로파일러는 평가 캐시와 별개로 mp4 폴더를 직접 읽습니다. **디스크 절약을 위해 샘플링될 비디오만 선택적으로 풀어주는 스크립트를 쓰세요** (전체 ~100GB 대신 필요한 150개 ~20-30GB만):
+
+```bash
+cd video-llm-eval && python latency/extract_videos_subset.py --dataset videomme --out_dir ~/videomme_videos
+# --n_per_duration/--seed를 프로파일러와 같게 유지해야 같은 샘플이 풀립니다 (기본 50/42)
+```
+
+디스크가 넉넉하면 전체를 풀어도 됩니다:
 
 ```bash
 SNAP=$(python -c "from huggingface_hub import snapshot_download; print(snapshot_download('lmms-eval/Video-MME', repo_type='dataset'))")
@@ -352,7 +359,7 @@ mkdir -p ~/videomme_videos
 find "$SNAP" -name "*.zip" -exec unzip -n {} -d ~/videomme_videos \;
 ```
 
-(Video-MME v2는 `MME-Benchmarks/Video-MME-v2`로 같은 방식, `~/videomme_v2_videos` 등으로)
+(Video-MME v2는 `--dataset videomme_v2`로 같은 방식. breakdown이 끝나면 `rm -rf ~/videomme_videos`로 공간 회수 — 원본 zip은 캐시에 남아 있습니다)
 
 ### 실행
 
