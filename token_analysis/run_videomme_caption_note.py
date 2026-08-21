@@ -44,6 +44,8 @@ def main():
                     help="static: novelty 하위(정적) 프레임 캡션 / uniform: 타임라인 균등 — 긴 비디오 커버리지 검증용 (--n_notes 8 권장)")
     ap.add_argument("--deferral_mode", choices=["strict", "loose"], default="strict",
                     help="strict: 확실할 때만 답 / loose: 관련 정보가 전혀 없을 때만 UNSURE (1차 응답률↑)")
+    ap.add_argument("--fast_deferral", action="store_true",
+                    help="notes/deferral만 평가 (full·reduced·qaware 생략, 샘플당 11회→5회) — deferral 다이얼 실험용")
     ap.add_argument("--pretrained", default="lmms-lab/llava-onevision-qwen2-7b-ov")
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
@@ -63,7 +65,9 @@ def main():
         tag += f"_def-{args.deferral_mode}"
     out_path = os.path.join(OUT_DIR, f"videomme_keep{args.keep}{tag}.json")
 
-    conds = ["full", "reduced", "notes", "notes_qaware", "deferral"]
+    conds = ["notes", "deferral"] if args.fast_deferral else ["full", "reduced", "notes", "notes_qaware", "deferral"]
+    if args.fast_deferral and args.deferral_mode == "strict":
+        tag += "_fast"
     k_frames = max(1, int(args.num_frames * args.keep))
     report = {"keep": args.keep, "n_notes": args.n_notes, "note_mode": args.note_mode,
               "deferral_mode": args.deferral_mode, "pretrained": args.pretrained,
@@ -102,24 +106,28 @@ def main():
                 note_idx = sorted(static_order[: max(args.n_notes * 3, args.n_notes)][::3][: args.n_notes])
 
             preds = {}
-            preds["full"] = runner.generate(frames, q)
             reduced = frames[keep_idx]
-            preds["reduced"] = runner.generate(reduced, q)
+            if "full" in conds:
+                preds["full"] = runner.generate(frames, q)
+            if "reduced" in conds:
+                preds["reduced"] = runner.generate(reduced, q)
 
             t0 = time.perf_counter()
             caps, caps_qa = [], []
             for ni in note_idx:
                 one = frames[ni:ni + 1]
                 caps.append(runner.generate(one, "Describe this frame in one detailed sentence.", max_new_tokens=48))
-                caps_qa.append(runner.generate(
-                    one, f"Describe this frame in one sentence, focusing on details relevant to: {row['prompt'].splitlines()[0]}",
-                    max_new_tokens=48))
+                if "notes_qaware" in conds:
+                    caps_qa.append(runner.generate(
+                        one, f"Describe this frame in one sentence, focusing on details relevant to: {row['prompt'].splitlines()[0]}",
+                        max_new_tokens=48))
             t_caption += time.perf_counter() - t0
 
             notes_txt = "Scene notes from the full video:\n" + "\n".join(f"- {c}" for c in caps)
             preds["notes"] = runner.generate(reduced, notes_txt + "\n\n" + q)
-            notes_txt_qa = "Scene notes from the full video:\n" + "\n".join(f"- {c}" for c in caps_qa)
-            preds["notes_qaware"] = runner.generate(reduced, notes_txt_qa + "\n\n" + q)
+            if "notes_qaware" in conds:
+                notes_txt_qa = "Scene notes from the full video:\n" + "\n".join(f"- {c}" for c in caps_qa)
+                preds["notes_qaware"] = runner.generate(reduced, notes_txt_qa + "\n\n" + q)
 
             stage1 = runner.generate_text(notes_txt + "\n\n" + q + stage1_suffix)
             if "UNSURE" in stage1.upper() or extract_letter(stage1) is None:
@@ -138,7 +146,8 @@ def main():
                     "duration": dur, "videoID": row["videoID"], "gt": gt,
                     "question_head": row["prompt"].splitlines()[0][:150],
                     "caps": caps, "caps_qaware": caps_qa,
-                    "pred_notes": preds["notes"][:80], "pred_qaware": preds["notes_qaware"][:80]})
+                    "pred_notes": preds["notes"][:80],
+                    "pred_qaware": preds.get("notes_qaware", "")[:80]})
             for c in conds:
                 correct[c] += rec[c]
             if (i + 1) % 10 == 0:
@@ -171,6 +180,8 @@ def main():
             if not recs:
                 continue
             for a, b in pairs:
+                if a not in conds or b not in conds:
+                    continue
                 n01, n10, p = mcnemar(a, b, recs)
                 mark = "유의" if p < 0.05 else "ns"
                 print(f"[{scope:6s}] {a:>13s} → {b:13s}: +{n01}/-{n10}, p={p:.4f} ({mark})")
