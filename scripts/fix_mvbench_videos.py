@@ -39,6 +39,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--fix", action="store_true", help="손상 파일을 zip에서 다시 풀기")
     ap.add_argument("--file", default=None, help="특정 파일명만 점검/복구 (예: ZS0XR.mp4)")
+    ap.add_argument("--verify", action="store_true",
+                    help="decord로 실제로 열어보며 검사 (크기는 정상인데 내용이 깨진 경우 탐지, 수 분 소요)")
     args = ap.parse_args()
 
     # 1) 디스크
@@ -76,6 +78,29 @@ def main():
             for p in targets:
                 print(f"  {args.file}: {os.path.getsize(p)} bytes")
             broken_names = {args.file}
+    elif args.verify:
+        try:
+            from decord import VideoReader, cpu
+        except ImportError:
+            print("  ★ decord가 없습니다. llava 또는 internvl 환경에서 실행하세요.")
+            return
+        broken = []
+        for i, p in enumerate(mp4s):
+            try:
+                vr = VideoReader(p, ctx=cpu(0), num_threads=1)
+                if len(vr) < 1:
+                    raise RuntimeError("frame count 0")
+                vr[0]  # 첫 프레임 실제 디코딩
+            except Exception as e:
+                broken.append(p)
+                print(f"    [깨짐] {os.path.relpath(p, root)}: {type(e).__name__}")
+            if (i + 1) % 500 == 0:
+                print(f"  검사 {i+1}/{len(mp4s)} — 지금까지 손상 {len(broken)}개", flush=True)
+        print(f"  디코딩 검사 결과: 손상 {len(broken)}개 / 전체 {len(mp4s)}개")
+        if not broken:
+            print("  → 모든 파일이 정상적으로 열립니다. 원인이 파일 손상이 아닐 수 있습니다.")
+            return
+        broken_names = {os.path.basename(p) for p in broken}
     else:
         broken = [p for p in mp4s if os.path.getsize(p) < MIN_OK]
         print(f"  손상 의심(10KB 미만): {len(broken)}개")
