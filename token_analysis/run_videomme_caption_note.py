@@ -46,6 +46,7 @@ def main():
                     help="strict: 확실할 때만 답 / loose: 관련 정보가 전혀 없을 때만 UNSURE (1차 응답률↑)")
     ap.add_argument("--fast_deferral", action="store_true",
                     help="notes/deferral만 평가 (full·reduced·qaware 생략, 샘플당 11회→5회) — deferral 다이얼 실험용")
+    ap.add_argument("--limit", type=int, default=None, help="디버그: duration당 N개만 (_debug 파일로 저장)")
     ap.add_argument("--pretrained", default="lmms-lab/llava-onevision-qwen2-7b-ov")
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
@@ -68,6 +69,8 @@ def main():
     conds = ["notes", "deferral"] if args.fast_deferral else ["full", "reduced", "notes", "notes_qaware", "deferral"]
     if args.fast_deferral and args.deferral_mode == "strict":
         tag += "_fast"
+    if args.limit:
+        tag += "_debug"
     k_frames = max(1, int(args.num_frames * args.keep))
     report = {"keep": args.keep, "n_notes": args.n_notes, "note_mode": args.note_mode,
               "deferral_mode": args.deferral_mode, "pretrained": args.pretrained,
@@ -81,6 +84,8 @@ def main():
     stage1_suffix = STAGE1_STRICT if args.deferral_mode == "strict" else STAGE1_LOOSE
 
     for dur, rows in samples.items():
+        if args.limit:
+            rows = rows[:args.limit]
         correct = {c: 0 for c in conds}
         total = escalated = 0
         t_caption = 0.0
@@ -130,6 +135,8 @@ def main():
                 preds["notes_qaware"] = runner.generate(reduced, notes_txt_qa + "\n\n" + q)
 
             stage1 = runner.generate_text(notes_txt + "\n\n" + q + stage1_suffix)
+            if args.limit:
+                print(f"  [stage1 원문] {stage1!r}", flush=True)
             if "UNSURE" in stage1.upper() or extract_letter(stage1) is None:
                 preds["deferral"] = preds["notes"]
                 escalated += 1
@@ -147,7 +154,8 @@ def main():
                     "question_head": row["prompt"].splitlines()[0][:150],
                     "caps": caps, "caps_qaware": caps_qa,
                     "pred_notes": preds["notes"][:80],
-                    "pred_qaware": preds.get("notes_qaware", "")[:80]})
+                    "pred_qaware": preds.get("notes_qaware", "")[:80],
+                    "stage1_raw": stage1[:200]})
             for c in conds:
                 correct[c] += rec[c]
             if (i + 1) % 10 == 0:
