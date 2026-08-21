@@ -72,6 +72,8 @@ def main():
     ap.add_argument("--n_notes", type=int, default=3)
     ap.add_argument("--frame_select", choices=["novelty", "retrieval"], default="novelty",
                     help="reduced/notes의 비주얼 프레임 선택: novelty(변화 큰 곳) vs retrieval(SigLIP 질문-프레임 유사도)")
+    ap.add_argument("--note_content", choices=["detail", "objects", "gist", "motion"], default="detail",
+                    help="노트의 내용 유형 — 무엇을 텍스트화할지의 ablation. motion은 캡셔너 입력이 연속 4프레임 클립")
     ap.add_argument("--note_mode", choices=["static", "uniform", "retrieval"], default="static",
                     help="static: novelty 하위(정적) 프레임 캡션 / uniform: 타임라인 균등 — 긴 비디오 커버리지 검증용 (--n_notes 8 권장)")
     ap.add_argument("--deferral_mode", choices=["strict", "loose"], default="strict",
@@ -97,6 +99,8 @@ def main():
         tag += f"_sel-{args.frame_select}"
     if args.note_mode != "static":
         tag += f"_notes-{args.note_mode}{args.n_notes}"
+    if args.note_content != "detail":
+        tag += f"_nc-{args.note_content}"
     if args.deferral_mode != "strict":
         tag += f"_def-{args.deferral_mode}"
     out_path = os.path.join(OUT_DIR, f"videomme_keep{args.keep}{tag}.json")
@@ -111,6 +115,14 @@ def main():
               "deferral_mode": args.deferral_mode, "pretrained": args.pretrained,
               "per_duration": {}, "caption_examples": []}
     records = []
+
+    CAPTION_PROMPTS = {
+        "detail": "Describe this frame in one detailed sentence.",
+        "objects": "List the visible people and objects in this frame with their colors and counts, in one sentence.",
+        "gist": "In one sentence, describe the overall situation: what kind of scene this is, where, and what is going on.",
+        "motion": "Describe the motions and actions occurring across these frames in one sentence.",
+    }
+    cap_prompt = CAPTION_PROMPTS[args.note_content]
 
     STAGE1_STRICT = ('\nIf the notes clearly determine the answer, reply with only the option letter. '
                      'If you cannot determine it from the notes alone, reply exactly "UNSURE".')
@@ -162,8 +174,9 @@ def main():
             t0 = time.perf_counter()
             caps, caps_qa = [], []
             for ni in note_idx:
-                one = frames[ni:ni + 1]
-                caps.append(runner.generate(one, "Describe this frame in one detailed sentence.", max_new_tokens=48))
+                # motion 노트는 연속 4프레임 클립을 입력 (단일 프레임엔 모션 정보가 없음)
+                one = frames[ni:ni + 4] if args.note_content == "motion" else frames[ni:ni + 1]
+                caps.append(runner.generate(one, cap_prompt, max_new_tokens=48))
                 if "notes_qaware" in conds:
                     caps_qa.append(runner.generate(
                         one, f"Describe this frame in one sentence, focusing on details relevant to: {row['prompt'].splitlines()[0]}",
@@ -188,6 +201,7 @@ def main():
             total += 1
             rec = {c: int(extract_letter(preds[c]) == gt) for c in conds}
             rec["_dur"] = dur
+            rec["_qtype"] = row.get("qtype")   # 노트 유형 × 질문 유형 매트릭스용
             records.append(rec)
             # 환각 검증용: duration별 처음 2개 샘플의 캡션 원문 저장
             if total <= 2:

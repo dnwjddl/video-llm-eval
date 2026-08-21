@@ -374,7 +374,8 @@ def load_samples(dataset, n_per_duration, seed):
             continue
         dur = str(dur).lower()
         prompt = q + "\n" + "\n".join(str(o) for o in opts) + "\nAnswer with the option's letter from the given choices directly."
-        by_dur[dur].append({"videoID": str(vid), "prompt": prompt, "answer": ans})
+        qtype = pick(row, ["task_type", "question_category", "sub_category"])
+        by_dur[dur].append({"videoID": str(vid), "prompt": prompt, "answer": ans, "qtype": str(qtype) if qtype else None})
 
     rng = random.Random(seed)
     picked = {}
