@@ -35,7 +35,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--keep", type=float, default=0.25)
     ap.add_argument("--video_dir", default=os.path.expanduser("~/videomme_videos"))
-    ap.add_argument("--n_per_duration", type=int, default=50)
+    ap.add_argument("--n_per_duration", type=int, default=250)
+    ap.add_argument("--durations", default="short,medium,long",
+                    help="GPU 분할용 — 예: GPU A는 --durations short,medium / GPU B는 --durations long")
     ap.add_argument("--num_frames", type=int, default=32)
     ap.add_argument("--n_notes", type=int, default=3)
     ap.add_argument("--pretrained", default="lmms-lab/llava-onevision-qwen2-7b-ov")
@@ -45,10 +47,13 @@ def main():
     from profile_latency import index_videos, load_samples, read_frames
 
     samples = load_samples("videomme", args.n_per_duration, args.seed)
+    want = [d.strip() for d in args.durations.split(",")]
+    samples = {d: rows for d, rows in samples.items() if d in want}
     vindex = index_videos(args.video_dir)
     runner = LlavaRunner(args.pretrained)
     os.makedirs(OUT_DIR, exist_ok=True)
-    out_path = os.path.join(OUT_DIR, f"videomme_keep{args.keep}.json")
+    tag = "" if len(want) == 3 else "_" + "-".join(want)
+    out_path = os.path.join(OUT_DIR, f"videomme_keep{args.keep}{tag}.json")
 
     conds = ["full", "reduced", "notes", "notes_qaware", "deferral"]
     k_frames = max(1, int(args.num_frames * args.keep))
