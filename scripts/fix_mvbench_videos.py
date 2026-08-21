@@ -26,6 +26,31 @@ def find_video_root():
     return None
 
 
+def dest_for(root, zip_path, member):
+    """zip 내부 경로가 zip 이름(subtask) 접두사를 포함하지 않으면 붙여준다.
+    lmms-eval은 mvbench_video/<subtask>/... 구조를 기대하므로, 접두사가 빠지면 못 찾는다."""
+    stem = os.path.splitext(os.path.basename(zip_path))[0]
+    parts = member.replace("\\", "/").split("/")
+    if parts and parts[0] == stem:
+        rel = member
+    else:
+        rel = f"{stem}/{member}"
+    return os.path.join(root, rel)
+
+
+def extract_member(root, zip_path, member):
+    """올바른 위치로 추출하고, 접두사 유무 양쪽 경로에 모두 놓아 경로 불일치를 방지."""
+    written = []
+    with zipfile.ZipFile(zip_path) as zf:
+        data = zf.read(member)
+    for path in {dest_for(root, zip_path, member), os.path.join(root, member)}:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as f:
+            f.write(data)
+        written.append(path)
+    return written
+
+
 def find_zips():
     zips = []
     for root, _, files in os.walk(os.path.join(HF_HOME, "hub")):
@@ -96,8 +121,10 @@ def main():
             print("\n복구하려면: python scripts/fix_mvbench_videos.py --restore-missing --fix")
             return
         for i, (z, m) in enumerate(missing):
-            with zipfile.ZipFile(z) as zf:
-                zf.extract(m, root)
+            paths = extract_member(root, z, m)
+            if i < 3:
+                for p in paths:
+                    print(f"    → {p}")
             if (i + 1) % 50 == 0:
                 print(f"  복구 {i+1}/{len(missing)}", flush=True)
         print(f"\n{len(missing)}개 복구 완료 — 평가를 다시 실행하세요.")
@@ -178,12 +205,11 @@ def main():
 
     done = 0
     for z, m in plan:
-        with zipfile.ZipFile(z) as zf:
-            zf.extract(m, root)
-        out = os.path.join(root, m)
-        print(f"  복구: {m} ({os.path.getsize(out)} bytes)")
+        print(f"  zip 내부 경로: {m}   (zip: {os.path.basename(z)})")
+        for p in extract_member(root, z, m):
+            print(f"    → {p}  ({os.path.getsize(p)} bytes)")
         done += 1
-    print(f"\n{done}개 복구 완료 — 평가를 다시 실행하세요.")
+    print(f"\n{done}개 복구 완료 — 위 경로가 에러 메시지의 경로와 일치하는지 확인 후 평가를 다시 실행하세요.")
 
 
 if __name__ == "__main__":
