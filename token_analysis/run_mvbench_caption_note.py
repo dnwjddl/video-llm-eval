@@ -93,7 +93,13 @@ class LlavaRunner:
         conv.append_message(conv.roles[1], None)
         ids = self.tokenizer(conv.get_prompt(), return_tensors="pt").input_ids
         out = self.model.generate(ids.to(self.model.device), do_sample=False, max_new_tokens=max_new_tokens)
-        return self.tokenizer.decode(out[0][ids.shape[1]:], skip_special_tokens=True).strip()
+        seq = out[0]
+        # llava의 텍스트 전용 경로(inputs_embeds)는 새 토큰만 반환하지만,
+        # 프롬프트가 포함된 형태로 오는 경우도 방어적으로 처리
+        n = ids.shape[1]
+        if seq.shape[0] > n and torch.equal(seq[:n].cpu(), ids[0]):
+            seq = seq[n:]
+        return self.tokenizer.decode(seq, skip_special_tokens=True).strip()
 
     @torch.no_grad()
     def generate(self, frames, text, max_new_tokens=24):
