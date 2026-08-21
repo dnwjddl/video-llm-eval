@@ -31,6 +31,36 @@ OUT_DIR = os.path.join(BASE, "token_analysis", "results_caption_note")
 from run_mvbench_caption_note import LlavaRunner, extract_letter, frame_novelty  # noqa: E402
 
 
+class FrameRetriever:
+    """SigLIP 이미지-텍스트 정렬로 질문 관련 프레임을 뽑는 training-free 검색기."""
+
+    SIGLIP = "google/siglip-so400m-patch14-384"
+
+    def __init__(self, device="cuda"):
+        from transformers import AutoProcessor, SiglipModel
+
+        self.model = SiglipModel.from_pretrained(self.SIGLIP, torch_dtype=torch.bfloat16).to(device).eval()
+        self.proc = AutoProcessor.from_pretrained(self.SIGLIP)
+        self.device = device
+
+    @torch.no_grad()
+    def scores(self, frames, query):
+        t = self.proc(text=[query], return_tensors="pt", padding="max_length", truncation=True).to(self.device)
+        txt = self.model.get_text_features(**t).float()
+        embs = []
+        for i in range(0, len(frames), 16):
+            im = self.proc(images=list(frames[i:i + 16]), return_tensors="pt").to(self.device)
+            im["pixel_values"] = im["pixel_values"].to(torch.bfloat16)
+            embs.append(self.model.get_image_features(**im).float())
+        img = torch.cat(embs)
+        sim = torch.nn.functional.normalize(img, dim=-1) @ torch.nn.functional.normalize(txt, dim=-1).T
+        return sim.squeeze(-1).cpu().numpy()
+
+    def top_frames(self, frames, query, k):
+        s = self.scores(frames, query)
+        return np.sort(np.argsort(-s)[:k])
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--keep", type=float, default=0.25)
@@ -40,7 +70,9 @@ def main():
                     help="GPU 분할용 — 예: GPU A는 --durations short,medium / GPU B는 --durations long")
     ap.add_argument("--num_frames", type=int, default=32)
     ap.add_argument("--n_notes", type=int, default=3)
-    ap.add_argument("--note_mode", choices=["static", "uniform"], default="static",
+    ap.add_argument("--frame_select", choices=["novelty", "retrieval"], default="novelty",
+                    help="reduced/notes의 비주얼 프레임 선택: novelty(변화 큰 곳) vs retrieval(SigLIP 질문-프레임 유사도)")
+    ap.add_argument("--note_mode", choices=["static", "uniform", "retrieval"], default="static",
                     help="static: novelty 하위(정적) 프레임 캡션 / uniform: 타임라인 균등 — 긴 비디오 커버리지 검증용 (--n_notes 8 권장)")
     ap.add_argument("--deferral_mode", choices=["strict", "loose"], default="strict",
                     help="strict: 확실할 때만 답 / loose: 관련 정보가 전혀 없을 때만 UNSURE (1차 응답률↑)")
@@ -58,8 +90,11 @@ def main():
     samples = {d: rows for d, rows in samples.items() if d in want}
     vindex = index_videos(args.video_dir)
     runner = LlavaRunner(args.pretrained)
+    retriever = FrameRetriever() if (args.frame_select == "retrieval" or args.note_mode == "retrieval") else None
     os.makedirs(OUT_DIR, exist_ok=True)
     tag = "" if len(want) == 3 else "_" + "-".join(want)
+    if args.frame_select != "novelty":
+        tag += f"_sel-{args.frame_select}"
     if args.note_mode != "static":
         tag += f"_notes-{args.note_mode}{args.n_notes}"
     if args.deferral_mode != "strict":
@@ -103,9 +138,16 @@ def main():
             q = row["prompt"]
             gt = str(row["answer"]).strip().strip("()").upper()[:1]
 
-            keep_idx = np.sort(np.argsort(-nov)[:k_frames])
+            q_head = row["prompt"].splitlines()[0][:200]
+            if args.frame_select == "retrieval":
+                keep_idx = retriever.top_frames(frames, q_head, k_frames)
+            else:
+                keep_idx = np.sort(np.argsort(-nov)[:k_frames])
             if args.note_mode == "uniform":
                 note_idx = sorted(set(np.linspace(0, len(frames) - 1, args.n_notes).astype(int).tolist()))
+            elif args.note_mode == "retrieval":
+                # 질문 인지는 '선택'에만, 캡션 문구는 중립 유지 (qaware의 환각 경로 회피)
+                note_idx = retriever.top_frames(frames, q_head, args.n_notes).tolist()
             else:
                 static_order = np.argsort(nov)
                 note_idx = sorted(static_order[: max(args.n_notes * 3, args.n_notes)][::3][: args.n_notes])
