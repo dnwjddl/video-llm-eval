@@ -13,7 +13,8 @@ TASKS_ARG=()
 #   GPU B: METHODS="tome kmeans temporal_pool framediff" RECON=0 CUDA_VISIBLE_DEVICES=1 bash ...
 METHODS="${METHODS:-pool_avg pool_max random pca_select tome kmeans temporal_pool framediff}"
 # keep 우선 순회: 극단 압축(차이가 가장 큰 구간)부터 결과가 나오도록
-KEEPS="0.05 0.125 0.25 0.5"
+# KEEPS도 오버라이드 가능 — 남은 작업을 GPU별로 쪼갤 때 사용
+KEEPS="${KEEPS:-0.05 0.125 0.25 0.5}"
 
 done_already() {  # 해당 조합 결과 폴더에 results.json이 있으면 완료로 간주
   ls token_analysis/results/"$1"_keep"$2"/*/*results.json >/dev/null 2>&1 || \
