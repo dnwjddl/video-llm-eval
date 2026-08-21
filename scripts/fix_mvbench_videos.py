@@ -42,6 +42,10 @@ def main():
     args = ap.parse_args()
 
     # 1) 디스크
+    if not os.path.isdir(HF_HOME):
+        print(f"[경고] HF_HOME 경로가 없습니다: {HF_HOME}")
+        print("  echo $HF_HOME 로 확인하고, 비어 있으면 source ~/.bashrc 후 다시 실행하세요.")
+        return
     total, used, free = shutil.disk_usage(HF_HOME)
     gb = 1024 ** 3
     print(f"[디스크] {HF_HOME}: 여유 {free/gb:.1f}GB / 전체 {total/gb:.1f}GB ({used/total*100:.0f}% 사용)")
