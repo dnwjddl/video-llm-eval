@@ -41,6 +41,8 @@ def main():
     ap.add_argument("--file", default=None, help="특정 파일명만 점검/복구 (예: ZS0XR.mp4)")
     ap.add_argument("--verify", action="store_true",
                     help="decord로 실제로 열어보며 검사 (크기는 정상인데 내용이 깨진 경우 탐지, 수 분 소요)")
+    ap.add_argument("--restore-missing", action="store_true",
+                    help="zip에는 있는데 폴더에 없는 파일을 전부 찾아 복구 (압축 해제가 중간에 끊긴 경우)")
     args = ap.parse_args()
 
     # 1) 디스크
@@ -68,6 +70,38 @@ def main():
             if f.lower().endswith((".mp4", ".avi", ".mkv", ".webm", ".mov")):
                 mp4s.append(os.path.join(r, f))
     print(f"  파일 {len(mp4s)}개")
+
+    if args.restore_missing:
+        have = {os.path.basename(p) for p in mp4s}
+        zips_all = find_zips()
+        missing = []   # (zip, member)
+        for z in zips_all:
+            try:
+                with zipfile.ZipFile(z) as zf:
+                    for m in zf.namelist():
+                        b = os.path.basename(m)
+                        if b.lower().endswith((".mp4", ".avi", ".mkv", ".webm", ".mov")) and b not in have:
+                            missing.append((z, m))
+            except zipfile.BadZipFile:
+                print(f"  [warn] 손상된 zip: {z}")
+        print(f"  zip에는 있으나 폴더에 없는 파일: {len(missing)}개")
+        for z, m in missing[:10]:
+            print(f"    {m}")
+        if len(missing) > 10:
+            print(f"    ... 외 {len(missing)-10}개")
+        if not missing:
+            print("  → 누락 파일 없음.")
+            return
+        if not args.fix:
+            print("\n복구하려면: python scripts/fix_mvbench_videos.py --restore-missing --fix")
+            return
+        for i, (z, m) in enumerate(missing):
+            with zipfile.ZipFile(z) as zf:
+                zf.extract(m, root)
+            if (i + 1) % 50 == 0:
+                print(f"  복구 {i+1}/{len(missing)}", flush=True)
+        print(f"\n{len(missing)}개 복구 완료 — 평가를 다시 실행하세요.")
+        return
 
     if args.file:
         targets = [p for p in mp4s if os.path.basename(p) == args.file]
