@@ -14,6 +14,7 @@ gradient 로 최적화하고, λ 를 훑어 (토큰 수, KL) 곡선을 얻는다
 | `llava_hooks.py` | 모델 로드, 입력 임베딩 + visual span 추출, attention bias 패치, 삭제 forward, 답 분포 비교 |
 | `stage0_equivalence.py` | **0단계**: bias 마스킹 ≈ 실제 삭제 등가성 검증, position 관례 비교, fwd+bwd 비용 측정 |
 | `stage1_mask_opt.py` | **1단계**: 비디오(·질문)별 λ sweep 마스크 최적화 → (\|S\|, KL) 곡선 + 실제 삭제 재검증 + 기준선 |
+| `plot_stage1.py` | 1단계 결과 집계·그림 (GPU 불필요): RD 곡선, b*(ε) 분포와 기준선 배수, task_type 별 b*, 답 보존 곡선, 마스크 시간·공간 프로파일, λ 간 포함 비율, 디렉터리 간 비교 |
 
 ## 0단계 실행
 
@@ -88,7 +89,18 @@ python oracle/stage1_mask_opt.py --pretrained lmms-lab/llava-onevision-qwen2-7b-
   "답에 필요한 양" 과 "이해 보존에 필요한 양" 의 간격. `cap_agree` 는 full-token argmax 와의 일치율, `gen_agree` 는
   생성 캡션이 raw argmax 와 같은지(repetition_penalty 를 꺼서 ≈1.0 이어야).
 
+## 1단계 집계·그림
+
+```bash
+python oracle/plot_stage1.py oracle/results/stage1_llava-onevision-qwen2-7b-ov_agnostic_letters
+python oracle/plot_stage1.py oracle/results/stage1_..._agnostic_caption --compare oracle/results/stage1_..._agnostic_letters --labels caption letters
+```
+
+`<dir>/figs/` 에 그림 6장, `<dir>/summary.md` 에 표 (λ 점별 중앙값, ε 별 최소 충분 예산 b*(ε) 와 기준선 배수,
+task_type 별 b*, 마스크 프로파일, λ 간 포함 비율). 진행 중인 결과 디렉터리에도 언제든 돌릴 수 있다.
+b*(ε) 는 (keep, KL) 곡선을 log-log 보간해 KL ≤ ε 인 최소 keep 으로 정의하며, 곡선의 최소점도 ε 이하면 ↓, 최대점도
+ε 초과면 ↑(=1.0 처리) 로 표시한다. λ 간 포함 비율은 warm start 때문에 낙관적이므로 nested 검정은 cold start 로 따로 한다.
+
 ## 다음 단계 (예정)
 
-- 곡선 집계·그림: 비디오별 (|S|, KL) 곡선, task_type 별 최소 충분 예산, oracle vs 기준선 간격, aware vs agnostic 간격.
 - attention top-k / 유사도 병합 기준선 추가. nested 검정(λ 간 S 포함 관계), seed 안정성.
