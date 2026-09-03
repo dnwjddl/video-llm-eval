@@ -80,6 +80,10 @@ python oracle/stage1_mask_opt.py --pretrained lmms-lab/llava-onevision-qwen2-7b-
 - 출력 `results/stage1_<model>_<mode>/<videoID>.json`: λ 점마다 `n_keep`, oracle(실제 삭제) KL·full 과 답 일치율·정확도,
   같은 개수의 random / frame_uniform / grid 기준선 KL. `masks_<videoID>.npz` 에 soft 마스크와 0/1 마스크.
 - `--resume` 로 중단 지점부터 이어서.
+- **`--verifier`**: `letters`(기본) 는 객관식 글자 분포 KL — 정보량이 2 bit 라 0.5B 에서 51 토큰(0.8%)으로도 답이 유지됐다.
+  `caption` 은 전체 토큰으로 생성한 비디오 설명(`--caption_tokens 96`)을 teacher-forcing 한 토큰별 full-vocab KL —
+  "모델의 이해가 보존되는 최소 subset" 에 가깝고 질문 라벨이 필요 없다. agnostic 에 권장. `both` 는 둘 다.
+  결과 디렉터리 이름에 verifier 가 붙는다 (`stage1_<model>_<mode>_<verifier>`).
 
 ## 다음 단계 (예정)
 

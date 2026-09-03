@@ -12,6 +12,12 @@
   agnostic : 한 비디오의 모든 질문 KL 을 함께 만족하는 마스크 하나 (질문을 모르는 encoder 의 상한)
   aware    : 질문마다 마스크 하나
 
+Verifier (--verifier)
+  letters : 객관식 선택지 글자 분포의 KL (정보량 ≤ 2 bit — 답만 재현하면 됨)
+  caption : 전체 토큰으로 생성한 비디오 설명을 teacher-forcing 한 토큰별 full-vocab KL (수백 토큰 × vocab —
+            "모델의 이해가 보존되는가"). 질문 라벨 없이 어떤 비디오에도 쓸 수 있음. agnostic 에 권장.
+  both    : 둘 다 (caption 은 --caption_weight 로 가중)
+
 기준선 (같은 |S_λ| 에서, 학습 없이 한 번의 forward)
   random        : 토큰 무작위
   frame_uniform : 프레임을 균등 간격으로 골라 통째로 유지
@@ -42,9 +48,12 @@ import numpy as np  # noqa: E402
 import torch  # noqa: E402
 
 from llava_hooks import (  # noqa: E402
-    build_prompt_ids, clear_state, delete_tokens, encode_video_inputs, install_bias_patch,
-    last_logits, letter_dist, letter_token_ids, letters_in_prompt, load_llava, make_bias, math_sdpa, set_mask_impl,
+    build_prompt_ids, clear_state, delete_tokens, encode_video_inputs, generate_caption, install_bias_patch,
+    last_logits, letter_dist, letter_token_ids, letters_in_prompt, load_llava, logits_at, make_bias, math_sdpa,
+    set_mask_impl,
 )
+
+CAPTION_PROMPT = "Describe this video in detail, including the objects, people, actions, and how the scene changes over time."
 
 
 # ----------------------------------------------------------------------------
@@ -106,25 +115,50 @@ def baseline_keep(name, n_keep, n_vis, n_frames, gen):
 # ----------------------------------------------------------------------------
 # 평가: subset 을 실제로 삭제하고 질문별 KL
 # ----------------------------------------------------------------------------
+def q_kl(q, logits):
+    """q 종류별 KL(p_full ‖ p_m). letters: 선택지 분포 (스칼라). caption: 토큰별 full-vocab KL 의 평균."""
+    if q["kind"] == "letters":
+        p = letter_dist(logits[0], q["lid"])
+        pf = q["p_full"]
+        return (pf * (pf.clamp_min(1e-12).log() - p.clamp_min(1e-12).log())).sum(), p
+    logp = torch.log_softmax(logits, dim=-1)                       # (T, V)
+    pf = q["p_full"]                                               # (T, V) fp32
+    kl = (pf * (pf.clamp_min(1e-12).log() - logp)).sum(-1).mean()
+    return kl, logp
+
+
 @torch.no_grad()
 def eval_subset(model, qs, keep):
-    """qs: [{vi, lid, p_full, letters, gt}], keep: (n_vis,) bool → 질문별 지표."""
+    """keep: (n_vis,) bool → 실제 삭제 후 질문별 지표."""
     out = []
+    n_del = int(keep.numel() - keep.sum())
     for q in qs:
         emb, pos = delete_tokens(q["vi"], keep, renumber=False)
-        logits = last_logits(model, emb, position_ids=pos)
-        p = letter_dist(logits, q["lid"])
-        pf = q["p_full"]
-        kl = float((pf * (pf.clamp_min(1e-12).log() - p.clamp_min(1e-12).log())).sum())
-        pred = q["letters"][int(p.argmax())]
-        out.append({"kl": kl, "pred": pred, "same_as_full": pred == q["full_pred"], "correct": pred == q["gt"]})
+        idx = [i - n_del for i in q["idx"]]          # 삭제된 비주얼 토큰은 모두 scoring 위치 앞에 있음
+        logits = logits_at(model, emb, idx, position_ids=pos)
+        kl, p = q_kl(q, logits)
+        rec = {"kind": q["kind"], "kl": float(kl)}
+        if q["kind"] == "letters":
+            pred = q["letters"][int(p.argmax())]
+            rec.update({"pred": pred, "same_as_full": pred == q["full_pred"], "correct": pred == q["gt"]})
+        else:
+            rec["token_agree"] = float((p.argmax(-1) == q["cap_ids"]).float().mean())   # 캡션 토큰 argmax 일치율
+        out.append(rec)
     return out
 
 
 def agg(evals):
-    return {"kl_mean": float(np.mean([e["kl"] for e in evals])), "kl_max": float(np.max([e["kl"] for e in evals])),
-            "same_as_full": float(np.mean([e["same_as_full"] for e in evals])),
-            "acc": float(np.mean([e["correct"] for e in evals]))}
+    r = {"kl_mean": float(np.mean([e["kl"] for e in evals])), "kl_max": float(np.max([e["kl"] for e in evals]))}
+    let = [e for e in evals if e["kind"] == "letters"]
+    cap = [e for e in evals if e["kind"] == "caption"]
+    if let:
+        r.update({"letters_kl_mean": float(np.mean([e["kl"] for e in let])),
+                  "same_as_full": float(np.mean([e["same_as_full"] for e in let])),
+                  "acc": float(np.mean([e["correct"] for e in let]))})
+    if cap:
+        r.update({"caption_kl_mean": float(np.mean([e["kl"] for e in cap])),
+                  "caption_token_agree": float(np.mean([e["token_agree"] for e in cap]))})
+    return r
 
 
 # ----------------------------------------------------------------------------
@@ -159,11 +193,11 @@ def optimize_mask(model, qs, args, log_prefix=""):
                     for q in batch:  # 질문별 fwd+bwd 를 순차로 누적 (메모리 절약)
                         m = torch.sigmoid(theta / tau)          # 질문마다 그래프를 새로 (backward 가 그래프를 해제하므로)
                         bias = make_bias(q["vi"], m)
-                        logits = last_logits(model, q["vi"].embeds, bias=bias, clear=False, pad_multiple=args.pad_multiple)
-                        p = letter_dist(logits, q["lid"])
-                        pf = q["p_full"]
-                        kl = (pf * (pf.clamp_min(1e-12).log() - p.clamp_min(1e-12).log())).sum()
-                        (kl / k).backward()
+                        logits = logits_at(model, q["vi"].embeds, q["idx"], bias=bias, clear=False,
+                                           pad_multiple=args.pad_multiple)
+                        kl, _ = q_kl(q, logits)
+                        w = args.caption_weight if q["kind"] == "caption" else 1.0
+                        (w * kl / k).backward()
                         clear_state()
                         kl_sum += float(kl)
                     m2 = torch.sigmoid(theta / tau)
@@ -199,8 +233,8 @@ def probe_grad_kernel(model, image_processor, tokenizer, read_frames, vindex, gr
         model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
         model.train()
     try:
-        logits = last_logits(model, vi.embeds, bias=make_bias(vi, torch.sigmoid(theta)), clear=False,
-                             pad_multiple=args.pad_multiple)
+        logits = logits_at(model, vi.embeds, [vi.L - 1], bias=make_bias(vi, torch.sigmoid(theta)), clear=False,
+                           pad_multiple=args.pad_multiple)[0]
         letter_dist(logits, lid).sum().backward()
         ok = theta.grad is not None
         return "default" if ok else "math"
@@ -229,6 +263,9 @@ def main():
     ap.add_argument("--steps_next", type=int, default=50)
     ap.add_argument("--lr", type=float, default=0.1)
     ap.add_argument("--q_per_step", type=int, default=1, help="step 당 질문 수 (round-robin). 0 = 전부")
+    ap.add_argument("--verifier", default="letters", choices=["letters", "caption", "both"])
+    ap.add_argument("--caption_tokens", type=int, default=96, help="caption verifier: 생성·채점할 캡션 토큰 수")
+    ap.add_argument("--caption_weight", type=float, default=1.0, help="both 일 때 caption KL 가중")
     ap.add_argument("--tau_start", type=float, default=1.0)
     ap.add_argument("--tau_end", type=float, default=0.1)
     ap.add_argument("--baselines", default="random,frame_uniform,grid")
@@ -247,7 +284,7 @@ def main():
     from profile_latency import index_videos, read_frames
 
     tag = args.pretrained.split("/")[-1]
-    out_dir = args.out_dir or os.path.join(BASE, "results", f"stage1_{tag}_{args.mode}")
+    out_dir = args.out_dir or os.path.join(BASE, "results", f"stage1_{tag}_{args.mode}_{args.verifier}")
     os.makedirs(out_dir, exist_ok=True)
     json.dump(vars(args), open(os.path.join(out_dir, "_args.json"), "w"), indent=2)
 
@@ -277,22 +314,40 @@ def main():
 
         # 질문별 입력·기준 분포 (encoder 는 질문마다 다시 돌지만 32프레임 SigLIP 이라 수 초)
         qs = []
+        caption_text = None
         with torch.no_grad(), (math_sdpa() if args.grad_kernel == "math" else contextlib.nullcontext()):
-            for q in groups[vid]:
-                ids = build_prompt_ids(tokenizer, q["prompt"])
+            if args.verifier in ("letters", "both"):
+                for q in groups[vid]:
+                    ids = build_prompt_ids(tokenizer, q["prompt"])
+                    vi = encode_video_inputs(model, image_processor, frames, ids)
+                    letters = letters_in_prompt(q["prompt"])
+                    lid = letter_token_ids(tokenizer, letters).to(model.device)
+                    p_full = letter_dist(last_logits(model, vi.embeds), lid)
+                    qs.append({"kind": "letters", "vi": vi, "idx": [vi.L - 1], "lid": lid, "letters": letters,
+                               "p_full": p_full, "full_pred": letters[int(p_full.argmax())], "gt": q["answer"],
+                               "task_type": q["task_type"], "qid": q["qid"]})
+            if args.verifier in ("caption", "both"):
+                cap_ids = generate_caption(model, tokenizer, image_processor, frames, CAPTION_PROMPT, args.caption_tokens)
+                caption_text = tokenizer.decode(cap_ids, skip_special_tokens=True)
+                ids = build_prompt_ids(tokenizer, CAPTION_PROMPT)
                 vi = encode_video_inputs(model, image_processor, frames, ids)
-                letters = letters_in_prompt(q["prompt"])
-                lid = letter_token_ids(tokenizer, letters).to(model.device)
-                p_full = letter_dist(last_logits(model, vi.embeds), lid)
-                qs.append({"vi": vi, "lid": lid, "letters": letters, "p_full": p_full,
-                           "full_pred": letters[int(p_full.argmax())], "gt": q["answer"],
-                           "task_type": q["task_type"], "qid": q["qid"]})
+                cap_emb = model.get_model().embed_tokens(cap_ids.to(model.device))
+                vi.embeds = torch.cat([vi.embeds, cap_emb.to(vi.embeds.dtype)], dim=0)   # 프롬프트 + 캡션
+                Lp = vi.L - cap_ids.numel()
+                idx = list(range(Lp - 1, Lp - 1 + cap_ids.numel()))               # 위치 Lp-1+t 가 c_t 를 예측
+                p_full = torch.softmax(logits_at(model, vi.embeds, idx), dim=-1)  # (T, V) fp32
+                qs.append({"kind": "caption", "vi": vi, "idx": idx, "p_full": p_full,
+                           "cap_ids": cap_ids.to(model.device), "qid": "caption", "task_type": "caption"})
+                print(f"[{vi_i + 1}/{len(vids)} {vid}] caption ({cap_ids.numel()} tok): {caption_text[:160]!r}", flush=True)
         n_vis, n_frames = qs[0]["vi"].n_vis, qs[0]["vi"].n_frames
 
         groups_to_opt = [qs] if args.mode == "agnostic" else [[q] for q in qs]
         record = {"videoID": vid, "mode": args.mode, "n_vis": n_vis, "n_frames": n_frames,
-                  "questions": [{"qid": q["qid"], "task_type": q["task_type"], "gt": q["gt"],
-                                 "full_pred": q["full_pred"], "full_correct": q["full_pred"] == q["gt"]} for q in qs],
+                  "verifier": args.verifier, "caption": caption_text,
+                  "questions": [({"qid": q["qid"], "task_type": q["task_type"], "gt": q["gt"],
+                                  "full_pred": q["full_pred"], "full_correct": q["full_pred"] == q["gt"]}
+                                 if q["kind"] == "letters" else {"qid": "caption", "n_tokens": len(q["idx"])})
+                                for q in qs],
                   "runs": []}
         masks = {}
         gen = torch.Generator().manual_seed(args.seed)
@@ -317,9 +372,11 @@ def main():
                 masks[f"g{gi}_lam{r['lambda']:g}_soft"] = r["m_soft"]
                 masks[f"g{gi}_lam{r['lambda']:g}_keep"] = keep.numpy()
                 bl = " ".join(f"{b}={pt['baselines'][b]['kl_mean']:.3f}" for b in baselines)
+                o = pt["oracle"]
+                extra = (f" same={o['same_as_full']:.2f}" if "same_as_full" in o else "") + \
+                        (f" cap_agree={o['caption_token_agree']:.2f}" if "caption_token_agree" in o else "")
                 print(f"{prefix} λ={r['lambda']:g}: keep {n_keep}/{n_vis} ({n_keep / n_vis:.3f})  "
-                      f"oracle KL={pt['oracle']['kl_mean']:.4f} same={pt['oracle']['same_as_full']:.2f}  | {bl}",
-                      flush=True)
+                      f"oracle KL={o['kl_mean']:.4f}{extra}  | {bl}", flush=True)
             record["runs"].append(run)
         record["sec"] = time.perf_counter() - t_video
         json.dump(record, open(out_json, "w"), indent=2)

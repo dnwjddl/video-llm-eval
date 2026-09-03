@@ -251,9 +251,9 @@ def clear_state():
     _STATE.rope_len = None
 
 
-def last_logits(model, embeds: torch.Tensor, position_ids: Optional[torch.Tensor] = None,
-                bias: Optional[torch.Tensor] = None, clear: bool = True, pad_multiple: int = 0) -> torch.Tensor:
-    """마지막 실제 위치의 vocab logits (float32, (vocab,)). bias 가 있으면 그 forward 동안 적용.
+def logits_at(model, embeds: torch.Tensor, idx, position_ids: Optional[torch.Tensor] = None,
+              bias: Optional[torch.Tensor] = None, clear: bool = True, pad_multiple: int = 0) -> torch.Tensor:
+    """지정한 위치들의 vocab logits (float32, (len(idx), vocab)). bias 가 있으면 그 forward 동안 적용.
 
     clear=False 이면 forward 후에도 state 를 남긴다. gradient checkpointing 은 backward 때
     layer forward 를 재실행하므로, 그때도 같은 bias 가 보여야 한다 → backward 후 clear_state() 호출.
@@ -279,11 +279,33 @@ def last_logits(model, embeds: torch.Tensor, position_ids: Optional[torch.Tensor
             position_ids=None if position_ids is None else position_ids[None],
             use_cache=False, return_dict=True,
         )
-        h = out.last_hidden_state[:, L - 1]
-        return model.lm_head(h)[0].float()
+        idx_t = torch.as_tensor(idx, device=embeds.device)
+        h = out.last_hidden_state[0, idx_t]
+        return model.lm_head(h).float()
     finally:
         if clear:
             clear_state()
+
+
+def last_logits(model, embeds: torch.Tensor, position_ids: Optional[torch.Tensor] = None,
+                bias: Optional[torch.Tensor] = None, clear: bool = True, pad_multiple: int = 0) -> torch.Tensor:
+    """마지막 실제 위치의 vocab logits (float32, (vocab,))."""
+    return logits_at(model, embeds, [embeds.shape[0] - 1], position_ids, bias, clear, pad_multiple)[0]
+
+
+@torch.no_grad()
+def generate_caption(model, tokenizer, image_processor, frames, prompt: str, max_new_tokens: int = 96) -> torch.Tensor:
+    """전체 토큰으로 greedy 생성한 캡션 토큰 id (T,). query-agnostic verifier 용 teacher 텍스트."""
+    ids = build_prompt_ids(tokenizer, prompt)
+    video = image_processor.preprocess(frames, return_tensors="pt")["pixel_values"]
+    video = video.to(device=model.device, dtype=next(model.parameters()).dtype)
+    out = model.generate(ids.unsqueeze(0).to(model.device), images=[video], modalities=["video"],
+                         do_sample=False, max_new_tokens=max_new_tokens)
+    cap = out[0]
+    eos = tokenizer.eos_token_id
+    if eos is not None and (cap == eos).any():
+        cap = cap[: int((cap == eos).nonzero()[0])]
+    return cap.cpu()
 
 
 class math_sdpa:
