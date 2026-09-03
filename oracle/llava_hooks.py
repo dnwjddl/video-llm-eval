@@ -26,13 +26,13 @@ LETTERS = "ABCDE"
 # ----------------------------------------------------------------------------
 # 모델 로드 / 입력 구성
 # ----------------------------------------------------------------------------
-def load_llava(pretrained: str, attn_impl: str = "sdpa"):
-    """LLaVA-OneVision 로드 (bf16, 단일 GPU). 모든 파라미터 requires_grad=False."""
+def load_llava(pretrained: str, attn_impl: str = "sdpa", dtype: str = "bfloat16"):
+    """LLaVA-OneVision 로드 (단일 GPU). 모든 파라미터 requires_grad=False. dtype: bfloat16 | float32."""
     from llava.model.builder import load_pretrained_model
 
     tokenizer, model, image_processor, _ = load_pretrained_model(
         pretrained, None, "llava_qwen", device_map="cuda",
-        torch_dtype="bfloat16", attn_implementation=attn_impl,
+        torch_dtype=dtype, attn_implementation=attn_impl,
     )
     model.eval()
     for p in model.parameters():
@@ -82,7 +82,7 @@ def encode_video_inputs(model, image_processor, frames, input_ids: torch.Tensor)
     from llava.constants import IMAGE_TOKEN_INDEX
 
     video = image_processor.preprocess(frames, return_tensors="pt")["pixel_values"]
-    video = video.to(device=model.device, dtype=torch.bfloat16)
+    video = video.to(device=model.device, dtype=next(model.parameters()).dtype)
     ids = input_ids.unsqueeze(0).to(model.device)
     _, _, _, _, embeds, _ = model.prepare_inputs_labels_for_multimodal(
         ids, None, None, None, None, [video], ["video"])

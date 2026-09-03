@@ -35,7 +35,10 @@ python oracle/stage0_equivalence.py --pretrained lmms-lab/llava-onevision-qwen2-
    돌리면 (1)에 그 커널 차이가 섞여 들어오므로 잡음 바닥과 같은 자릿수면 통과로 본다.
 3. **(2) bias vs 삭제(renumber)**: LLaVA-OV 는 1D RoPE 라 토큰을 지우면 뒤 토큰 위치가 밀린다.
    (2)가 (1)보다 뚜렷이 크면 "position 유지"를 기본 관례로 채택하고, 논문에서는 둘 다 보고.
-4. **(3) fwd+bwd 비용**: 7B 기준 step 시간과 peak 메모리. `grad|θ|` 가 0 이면 gradient 가 마스크까지
+3-1. **fp32 확정 실험**: `--dtype float32` (0.5B) 로 돌리면 (1)이 ~1e-6 수준으로 떨어져야 한다. 그러면 bf16 에서
+   남는 1e-3 KL 은 softmax 누적 반올림(가린 경로는 6,380 key 위에서, 삭제 경로는 짧은 시퀀스에서 정규화)임이 확정된다.
+4. **(3) fwd+bwd 비용**: gradient 경로는 기본 `--grad_kernel math` 로 돈다. memory-efficient SDPA 는 float mask 의
+   backward 에서 `LSE is not correctly aligned (strideH)` 정렬 오류를 낸다 (L=6380 이 8 의 배수가 아님). 7B 기준 step 시간과 peak 메모리. `grad|θ|` 가 0 이면 gradient 가 마스크까지
    안 흐르는 것 (non-reentrant checkpointing 이 켜졌는지 확인). sdpa 에서 backward 가 실패하면
    `--attn_impl eager` 로 재시도.
 

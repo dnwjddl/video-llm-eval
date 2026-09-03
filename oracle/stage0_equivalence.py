@@ -73,6 +73,10 @@ def main():
     ap.add_argument("--keeps", default="0.5,0.25,0.1")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--attn_impl", default="sdpa", choices=["sdpa", "eager"])
+    ap.add_argument("--dtype", default="bfloat16", choices=["bfloat16", "float32"],
+                    help="float32 로 돌리면 (1)의 잔차가 bf16 반올림인지 확정할 수 있다 (0.5B 권장)")
+    ap.add_argument("--grad_kernel", default="math", choices=["math", "default"],
+                    help="timing(fwd+bwd) 에 쓸 SDPA 백엔드. mem-efficient 는 float mask backward 에서 정렬 오류(LSE strideH)가 나므로 math 기본")
     ap.add_argument("--timing", action="store_true", help="연속 마스크 fwd+bwd 비용 측정")
     ap.add_argument("--timing_steps", type=int, default=3)
     ap.add_argument("--kernel", default="math", choices=["math", "default"],
@@ -83,12 +87,12 @@ def main():
 
     from profile_latency import index_videos, load_samples, read_frames
 
-    tag = args.pretrained.split("/")[-1]
+    tag = args.pretrained.split("/")[-1] + ("_fp32" if args.dtype == "float32" else "")
     out_path = args.out or os.path.join(BASE, "results", f"stage0_{tag}.json")
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
     print("loading model...", flush=True)
-    tokenizer, model, image_processor = load_llava(args.pretrained, args.attn_impl)
+    tokenizer, model, image_processor = load_llava(args.pretrained, args.attn_impl, args.dtype)
     attn_cls = install_bias_patch(model)
     print(f"[patch] {attn_cls.__name__}.forward 에 visual bias 훅 설치", flush=True)
 
@@ -155,7 +159,10 @@ def main():
 
         # ---- (3) 연속 마스크 fwd+bwd 비용 (첫 샘플에서만) ----
         if args.timing and timing is None:
-            timing = run_timing(model, vi, full, lid, args.timing_steps, use_checkpoint=not args.no_checkpoint)
+            gctx = math_sdpa() if args.grad_kernel == "math" else contextlib.nullcontext()
+            with gctx:
+                timing = run_timing(model, vi, full, lid, args.timing_steps, use_checkpoint=not args.no_checkpoint)
+            timing["note"] += f" | grad_kernel={args.grad_kernel}"
 
     # ---- 요약 ----
     flat = [c for r in results for c in r["conds"]]
