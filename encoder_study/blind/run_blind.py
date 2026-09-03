@@ -1,5 +1,10 @@
 """Text-only (blind) inference with option rotation.
 
+Scoring modes
+  logits   (default) one forward pass per prompt; the answer is the option letter with the
+           highest next-token logit. No parsing failures, no refusals; deterministic.
+  generate greedy generation + lenient letter parsing (lmms-eval style). Refusals count as wrong.
+
 For each item and each cyclic shift s in [0, K), the LLM sees ONLY the question
 and the rotated options. Output: one row per (item, shift) with the raw text,
 parsed option index, rotated answer index and correctness.
@@ -19,7 +24,7 @@ import time
 import pandas as pd
 from tqdm import tqdm
 
-from .schema import DEFAULT_POST_PROMPT, build_prompt, frame_to_items, parse_letter, rotate, rotation_shifts
+from .schema import DEFAULT_POST_PROMPT, LETTERS, build_prompt, frame_to_items, parse_letter, rotate, rotation_shifts
 
 SYSTEM_PROMPT = "You are a helpful assistant."
 
@@ -79,6 +84,40 @@ class HFEngine:
         msgs = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": prompt}]
         return self.tok.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
 
+    def _letter_ids(self, n):
+        ids = []
+        for L in LETTERS[:n]:
+            cand = set()
+            for v in (L, " " + L, L + ".", "(" + L):
+                t = self.tok.encode(v, add_special_tokens=False)
+                if len(t) >= 1:
+                    cand.add(t[0])
+            ids.append(sorted(cand))
+        return ids
+
+    def score_letters(self, prompts, n_options):
+        """Return (pred_idx, raw) per prompt using next-token logits over option letters."""
+        import torch
+
+        texts = [self.chat(p) for p in prompts]
+        order = sorted(range(len(texts)), key=lambda i: len(texts[i]))
+        preds = [None] * len(texts)
+        cache = {}
+        for b in tqdm(range(0, len(order), self.bs), desc="score"):
+            idx = order[b : b + self.bs]
+            enc = self.tok([texts[i] for i in idx], return_tensors="pt", padding=True).to(self.device)
+            with torch.no_grad():
+                logits = self.model(**enc).logits[:, -1, :].float()
+            for row, i in enumerate(idx):
+                n = n_options[i]
+                if n not in cache:
+                    cache[n] = self._letter_ids(n)
+                scores = [logits[row, ids].max().item() if ids else float("-inf") for ids in cache[n]]
+                k = max(range(n), key=lambda j: scores[j])
+                srt = sorted(scores, reverse=True)
+                preds[i] = (k, f"{LETTERS[k]} (margin {srt[0] - srt[1]:.2f})")
+        return preds
+
     def generate(self, prompts):
         import torch
 
@@ -113,6 +152,26 @@ class VLLMEngine:
         res = self.llm.generate([self.chat(p) for p in prompts], self.sp)
         return [r.outputs[0].text for r in res]
 
+    def score_letters(self, prompts, n_options):
+        from vllm import SamplingParams
+
+        res = self.llm.generate([self.chat(p) for p in prompts], SamplingParams(temperature=0, max_tokens=1, logprobs=30))
+        out = []
+        for r, n in zip(res, n_options):
+            lp = r.outputs[0].logprobs[0] if r.outputs[0].logprobs else {}
+            scores = [float("-inf")] * n
+            for tid, info in lp.items():
+                tok = (getattr(info, "decoded_token", None) or self.tok.decode([tid])).strip().strip("().:")
+                if len(tok) == 1 and tok.upper() in LETTERS[:n]:
+                    j = LETTERS.index(tok.upper())
+                    scores[j] = max(scores[j], info.logprob)
+            if max(scores) == float("-inf"):
+                out.append((-1, "no letter in top-30 logprobs"))
+            else:
+                k = max(range(n), key=lambda j: scores[j])
+                out.append((k, f"{LETTERS[k]} (logprob {scores[k]:.2f})"))
+        return out
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -128,9 +187,15 @@ def main():
     ap.add_argument("--post-prompt", default=DEFAULT_POST_PROMPT)
     ap.add_argument("--limit", type=int, default=0, help="debug: only first N items")
     ap.add_argument("--device", default="", help="e.g. cuda:1; default = GPU with most free memory")
+    ap.add_argument("--scoring", choices=["logits", "generate"], default="logits")
+    ap.add_argument("--benchmarks", default="", help="comma list: only run these benchmarks")
+    ap.add_argument("--purge-benchmarks", default="", help="comma list: delete existing rows of these benchmarks from --out before (re)running")
     args = ap.parse_args()
 
     items = load_items(args.items)
+    if args.benchmarks:
+        keep = set(b.strip() for b in args.benchmarks.split(",") if b.strip())
+        items = [it for it in items if it.benchmark in keep]
     if args.limit:
         items = items[: args.limit]
     reqs = make_requests(items, args.rotations, args.post_prompt)
@@ -138,6 +203,12 @@ def main():
     done = set()
     if os.path.exists(args.out):  # resume
         prev = pd.read_parquet(args.out)
+        if args.purge_benchmarks:
+            purge = set(b.strip() for b in args.purge_benchmarks.split(",") if b.strip())
+            n0 = len(prev)
+            prev = prev[~prev["benchmark"].isin(purge)]
+            print(f"purged {n0 - len(prev)} rows of {sorted(purge)}")
+            prev.to_parquet(args.out, index=False)
         done = set(zip(prev["item_id"], prev["shift"]))
         reqs = [r for r in reqs if (r["item_id"], r["shift"]) not in done]
         print(f"resuming: {len(done)} rows done, {len(reqs)} to go")
@@ -150,14 +221,22 @@ def main():
     eng = (HFEngine(args.model, args.dtype, args.batch_size, args.max_new_tokens) if args.engine == "hf"
            else VLLMEngine(args.model, args.dtype, args.max_new_tokens, args.tensor_parallel))
     t0 = time.time()
-    outs = eng.generate([r["prompt"] for r in reqs])
+    if args.scoring == "logits":
+        scored = eng.score_letters([r["prompt"] for r in reqs], [r["n_options"] for r in reqs])
+        outs = [raw for _, raw in scored]
+        preds = [k for k, _ in scored]
+    else:
+        outs = eng.generate([r["prompt"] for r in reqs])
+        preds = [parse_letter(o, r["n_options"], r["options"]) for r, o in zip(reqs, outs)]
     rows = []
-    for r, o in zip(reqs, outs):
-        pred = parse_letter(o, r["n_options"], r["options"])
+    for r, o, pred in zip(reqs, outs, preds):
         rows.append({"item_id": r["item_id"], "benchmark": r["benchmark"], "category": r["category"], "shift": r["shift"],
                      "n_options": r["n_options"], "answer_idx": r["answer_idx"], "pred_idx": pred, "correct": int(pred == r["answer_idx"]),
-                     "parsed": int(pred >= 0), "raw_output": o, "model": args.model})
+                     "parsed": int(pred >= 0), "raw_output": o, "model": args.model, "scoring": args.scoring})
     df = pd.DataFrame(rows)
+    bad = df[df["parsed"] == 0]["raw_output"].value_counts().head(10)
+    if len(bad):
+        print("most common unparsed outputs:\n" + bad.to_string())
     if done:
         df = pd.concat([pd.read_parquet(args.out), df], ignore_index=True)
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)

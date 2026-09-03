@@ -55,6 +55,10 @@ def main():
             print(f"[FAIL] {name}\n{traceback.format_exc()}", file=sys.stderr)
             continue
         df = items_to_frame(items)
+        dup = df["item_id"].duplicated().sum()
+        if dup:
+            print(f"[WARN] {name}: {dup} duplicate item_ids -> suffixing with row index", file=sys.stderr)
+            df["item_id"] = [f"{i}#{k}" if d else i for k, (i, d) in enumerate(zip(df["item_id"], df["item_id"].duplicated(keep=False)))]
         path = os.path.join(args.out, f"{name}.parquet")
         df.to_parquet(path, index=False)
         n_video = int((df["video_path"] != "").sum()) if len(df) else 0

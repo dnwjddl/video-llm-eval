@@ -20,6 +20,10 @@ from scipy.stats import binomtest
 
 
 def per_model(pred: pd.DataFrame) -> pd.DataFrame:
+    dup = pred.duplicated(["item_id", "shift"]).sum()
+    if dup:
+        print(f"[WARN] {dup} duplicate (item_id, shift) rows in predictions; keeping the last. Rebuild items + rerun that benchmark with --purge-benchmarks.")
+        pred = pred.drop_duplicates(["item_id", "shift"], keep="last")
     g = pred.groupby("item_id")
     out = pd.DataFrame({
         "benchmark": g["benchmark"].first(),

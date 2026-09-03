@@ -204,7 +204,7 @@ def load_perceptiontest(**_) -> List[Item]:
         opts = [str(o) for o in doc["options"]]
         ans = int(doc["answer_id"])
         vp = _first_existing([os.path.join(cache, f"{doc['video_name']}.mp4"), os.path.join(cache, f"{doc['video_name']}.MP4")])
-        items.append(Item(f"perceptiontest:{doc.get('question_id', i)}", "perceptiontest", str(doc.get("area", "")), doc["question"],
+        items.append(Item(f"perceptiontest:{doc['video_name']}:{doc.get('question_id', i)}", "perceptiontest", str(doc.get("area", "")), doc["question"],
                           opts, ans, vp, str(doc["video_name"]), str(doc.get("reasoning", "")), {"tag": doc.get("tag")}))
     return items
 
