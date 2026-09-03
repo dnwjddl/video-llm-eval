@@ -144,14 +144,31 @@ def load_tvbench(subtasks: Optional[List[str]] = None, **_) -> List[Item]:
 
 
 # ---------------------------------------------------------------- TOMATO
+def _guess_category_column(ds, exclude=("question", "options", "answer", "video_path", "id", "key")) -> Optional[str]:
+    """Pick the string column with 2..30 distinct values (benchmark task/category labels)."""
+    best = None
+    for col in ds.column_names:
+        if col in exclude:
+            continue
+        vals = ds[col][:2000] if len(ds) > 2000 else ds[col]
+        if not vals or not isinstance(vals[0], str):
+            continue
+        n = len(set(vals))
+        if 2 <= n <= 30 and (best is None or n > best[1]):
+            best = (col, n)
+    return best[0] if best else None
+
+
 def load_tomato(**_) -> List[Item]:
     cache = os.path.join(HF_HOME, "TOMATO")
     ds = _hf("lmms-eval/TOMATO", split="test")
+    cat_col = next((k for k in ["task", "task_type", "reasoning_type", "category", "type"] if k in ds.column_names), None) or _guess_category_column(ds)
+    print(f"[tomato] columns={ds.column_names}  category column -> {cat_col}")
     items = []
     for i, doc in enumerate(ds):
         opts = [str(o) for o in doc["options"]]
         ans = _answer_index(opts, doc["answer"])
-        cat = next((str(doc[k]) for k in ["task", "task_type", "reasoning_type", "category", "type"] if k in doc and doc[k]), "unknown")
+        cat = str(doc[cat_col]) if cat_col else "unknown"
         sub = str(doc.get("demonstration_type") or doc.get("video_type") or "")
         vp = _first_existing([os.path.join(cache, str(doc["video_path"]))])
         items.append(Item(f"tomato:{i}", "tomato", cat, doc["question"], opts, ans, vp, str(doc["video_path"]), sub))

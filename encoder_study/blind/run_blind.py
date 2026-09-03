@@ -24,6 +24,22 @@ from .schema import DEFAULT_POST_PROMPT, build_prompt, frame_to_items, parse_let
 SYSTEM_PROMPT = "You are a helpful assistant."
 
 
+def pick_device() -> str:
+    """Use the GPU with the most free memory (respects CUDA_VISIBLE_DEVICES; explicit --device overrides)."""
+    import torch
+
+    if not torch.cuda.is_available():
+        return "cpu"
+    best, best_free = 0, -1
+    for i in range(torch.cuda.device_count()):
+        free, total = torch.cuda.mem_get_info(i)
+        print(f"cuda:{i} free {free / 2**30:.1f} / {total / 2**30:.1f} GiB")
+        if free > best_free:
+            best, best_free = i, free
+    print(f"-> using cuda:{best}")
+    return f"cuda:{best}"
+
+
 def load_items(patterns):
     files = []
     for p in patterns:
@@ -52,7 +68,11 @@ class HFEngine:
         self.tok = AutoTokenizer.from_pretrained(model, padding_side="left")
         if self.tok.pad_token is None:
             self.tok.pad_token = self.tok.eos_token
-        self.model = AutoModelForCausalLM.from_pretrained(model, torch_dtype=getattr(torch, dtype), device_map="cuda").eval()
+        self.device = pick_device()
+        try:
+            self.model = AutoModelForCausalLM.from_pretrained(model, dtype=getattr(torch, dtype), device_map=self.device).eval()
+        except TypeError:  # older transformers
+            self.model = AutoModelForCausalLM.from_pretrained(model, torch_dtype=getattr(torch, dtype), device_map=self.device).eval()
         self.bs, self.mnt = batch_size, max_new_tokens
 
     def chat(self, prompt):
@@ -67,7 +87,7 @@ class HFEngine:
         outs = [None] * len(texts)
         for b in tqdm(range(0, len(order), self.bs), desc="generate"):
             idx = order[b : b + self.bs]
-            enc = self.tok([texts[i] for i in idx], return_tensors="pt", padding=True).to("cuda")
+            enc = self.tok([texts[i] for i in idx], return_tensors="pt", padding=True).to(self.device)
             with torch.no_grad():
                 gen = self.model.generate(**enc, max_new_tokens=self.mnt, do_sample=False, temperature=None, top_p=None,
                                           pad_token_id=self.tok.pad_token_id)
@@ -107,6 +127,7 @@ def main():
     ap.add_argument("--tensor-parallel", type=int, default=1)
     ap.add_argument("--post-prompt", default=DEFAULT_POST_PROMPT)
     ap.add_argument("--limit", type=int, default=0, help="debug: only first N items")
+    ap.add_argument("--device", default="", help="e.g. cuda:1; default = GPU with most free memory")
     args = ap.parse_args()
 
     items = load_items(args.items)
@@ -124,6 +145,8 @@ def main():
         print("nothing to do")
         return
 
+    if args.device:
+        globals()["pick_device"] = lambda: args.device
     eng = (HFEngine(args.model, args.dtype, args.batch_size, args.max_new_tokens) if args.engine == "hf"
            else VLLMEngine(args.model, args.dtype, args.max_new_tokens, args.tensor_parallel))
     t0 = time.time()
