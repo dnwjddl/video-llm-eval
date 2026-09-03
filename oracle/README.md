@@ -75,7 +75,7 @@ python oracle/stage1_mask_opt.py --pretrained lmms-lab/llava-onevision-qwen2-7b-
 ```
 
 - 데이터: Video-MME 로컬 비디오 145개 × 그 비디오의 질문 전부(3개, `task_type` 라벨). 새로 받을 것 없음.
-- 비디오마다 λ 8개 × (150 + 7×50) = 500 step. (0.5B 파일럿: λ=0.03 에서 이미 keep 6%, 51토큰(0.8%)에서도 답 유지 → λ 를 1e-3 부터.) 기본 `--q_per_step 1` 은 step 마다 질문 하나를 돌아가며 써서
+- 비디오마다 λ 6개(10배 간격 1e-3~100) × (150 + 5×100) = 650 step. λ 당 50 step 은 keep 이 계속 줄고 있는 채로 끝나 곡선 점이 궤적 스냅샷이 되므로 100 으로. (0.5B 파일럿: λ=0.03 에서 이미 keep 6%, 51토큰(0.8%)에서도 답 유지 → λ 를 1e-3 부터.) 기본 `--q_per_step 1` 은 step 마다 질문 하나를 돌아가며 써서
   agnostic 의 비용을 aware 와 같게 맞춘다. 0단계 timing 의 s/step × 450 이 비디오당 최적화 시간.
 - 출력 `results/stage1_<model>_<mode>/<videoID>.json`: λ 점마다 `n_keep`, oracle(실제 삭제) KL·full 과 답 일치율·정확도,
   같은 개수의 random / frame_uniform / grid 기준선 KL. `masks_<videoID>.npz` 에 soft 마스크와 0/1 마스크.
@@ -84,6 +84,9 @@ python oracle/stage1_mask_opt.py --pretrained lmms-lab/llava-onevision-qwen2-7b-
   `caption` 은 전체 토큰으로 생성한 비디오 설명(`--caption_tokens 96`)을 teacher-forcing 한 토큰별 full-vocab KL —
   "모델의 이해가 보존되는 최소 subset" 에 가깝고 질문 라벨이 필요 없다. agnostic 에 권장. `both` 는 둘 다.
   결과 디렉터리 이름에 verifier 가 붙는다 (`stage1_<model>_<mode>_<verifier>`).
+  0.5B 파일럿: letters oracle 은 5% 에서 답 유지, caption oracle 은 KL 0.0015 에 61~66%, KL 0.04 에 15~21% 필요 —
+  "답에 필요한 양" 과 "이해 보존에 필요한 양" 의 간격. `cap_agree` 는 full-token argmax 와의 일치율, `gen_agree` 는
+  생성 캡션이 raw argmax 와 같은지(repetition_penalty 를 꺼서 ≈1.0 이어야).
 
 ## 다음 단계 (예정)
 

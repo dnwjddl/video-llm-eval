@@ -142,7 +142,7 @@ def eval_subset(model, qs, keep):
             pred = q["letters"][int(p.argmax())]
             rec.update({"pred": pred, "same_as_full": pred == q["full_pred"], "correct": pred == q["gt"]})
         else:
-            rec["token_agree"] = float((p.argmax(-1) == q["cap_ids"]).float().mean())   # 캡션 토큰 argmax 일치율
+            rec["token_agree"] = float((p.argmax(-1) == q["full_argmax"]).float().mean())   # full-token argmax 와 일치율
         out.append(rec)
     return out
 
@@ -257,10 +257,11 @@ def main():
     ap.add_argument("--mode", default="agnostic", choices=["agnostic", "aware"])
     ap.add_argument("--limit", type=int, default=None, help="비디오 수 제한")
     ap.add_argument("--num_frames", type=int, default=32)
-    ap.add_argument("--lambdas", default="0.001,0.003,0.01,0.03,0.1,0.3,1,3",
-                    help="0.5B 파일럿: λ=0.03 에서 이미 keep 6% 라 10~50% 구간을 덮으려면 1e-3 부터")
+    ap.add_argument("--lambdas", default="0.001,0.01,0.1,1,10,100",
+                    help="10배 간격 6점. letters 는 λ=0.03 에서 keep 6%, caption 은 λ=3 에서 15~20% (0.5B 파일럿)")
     ap.add_argument("--steps_first", type=int, default=150)
-    ap.add_argument("--steps_next", type=int, default=50)
+    ap.add_argument("--steps_next", type=int, default=100,
+                    help="λ 당 step. 50 이면 keep 이 계속 줄고 있는 채로 끝나 곡선 점이 궤적 스냅샷이 됨")
     ap.add_argument("--lr", type=float, default=0.1)
     ap.add_argument("--q_per_step", type=int, default=1, help="step 당 질문 수 (round-robin). 0 = 전부")
     ap.add_argument("--verifier", default="letters", choices=["letters", "caption", "both"])
@@ -336,9 +337,12 @@ def main():
                 Lp = vi.L - cap_ids.numel()
                 idx = list(range(Lp - 1, Lp - 1 + cap_ids.numel()))               # 위치 Lp-1+t 가 c_t 를 예측
                 p_full = torch.softmax(logits_at(model, vi.embeds, idx), dim=-1)  # (T, V) fp32
-                qs.append({"kind": "caption", "vi": vi, "idx": idx, "p_full": p_full,
-                           "cap_ids": cap_ids.to(model.device), "qid": "caption", "task_type": "caption"})
-                print(f"[{vi_i + 1}/{len(vids)} {vid}] caption ({cap_ids.numel()} tok): {caption_text[:160]!r}", flush=True)
+                full_argmax = p_full.argmax(-1)
+                gen_agree = float((full_argmax == cap_ids.to(model.device)).float().mean())  # 생성 토큰 = raw argmax 인지 (≈1.0 이어야)
+                qs.append({"kind": "caption", "vi": vi, "idx": idx, "p_full": p_full, "full_argmax": full_argmax,
+                           "cap_ids": cap_ids.to(model.device), "qid": "caption", "task_type": "caption",
+                           "gen_agree": gen_agree})
+                print(f"[{vi_i + 1}/{len(vids)} {vid}] caption ({cap_ids.numel()} tok, gen=argmax {gen_agree:.2f}): {caption_text[:160]!r}", flush=True)
         n_vis, n_frames = qs[0]["vi"].n_vis, qs[0]["vi"].n_frames
 
         groups_to_opt = [qs] if args.mode == "agnostic" else [[q] for q in qs]
@@ -346,7 +350,7 @@ def main():
                   "verifier": args.verifier, "caption": caption_text,
                   "questions": [({"qid": q["qid"], "task_type": q["task_type"], "gt": q["gt"],
                                   "full_pred": q["full_pred"], "full_correct": q["full_pred"] == q["gt"]}
-                                 if q["kind"] == "letters" else {"qid": "caption", "n_tokens": len(q["idx"])})
+                                 if q["kind"] == "letters" else {"qid": "caption", "n_tokens": len(q["idx"]), "gen_agree": q["gen_agree"]})
                                 for q in qs],
                   "runs": []}
         masks = {}

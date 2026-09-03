@@ -299,13 +299,20 @@ def generate_caption(model, tokenizer, image_processor, frames, prompt: str, max
     ids = build_prompt_ids(tokenizer, prompt)
     video = image_processor.preprocess(frames, return_tensors="pt")["pixel_values"]
     video = video.to(device=model.device, dtype=next(model.parameters()).dtype)
+    # repetition_penalty=1.0: Qwen2 기본 generation config(1.05) 를 끄고 순수 greedy argmax 로 생성
     out = model.generate(ids.unsqueeze(0).to(model.device), images=[video], modalities=["video"],
-                         do_sample=False, max_new_tokens=max_new_tokens)
-    cap = out[0]
-    eos = tokenizer.eos_token_id
-    if eos is not None and (cap == eos).any():
-        cap = cap[: int((cap == eos).nonzero()[0])]
-    return cap.cpu()
+                         do_sample=False, max_new_tokens=max_new_tokens, repetition_penalty=1.0,
+                         temperature=None, top_p=None, top_k=None)
+    cap = out[0].cpu()
+    eos_ids = {tokenizer.eos_token_id}
+    gc_eos = getattr(model.generation_config, "eos_token_id", None)
+    for e in (gc_eos if isinstance(gc_eos, (list, tuple)) else [gc_eos]):
+        eos_ids.add(e)
+    eos_ids.discard(None)
+    stop = [i for i, t in enumerate(cap.tolist()) if t in eos_ids]
+    if stop:
+        cap = cap[: stop[0]]
+    return cap
 
 
 class math_sdpa:
