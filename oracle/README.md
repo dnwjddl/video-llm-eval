@@ -13,6 +13,7 @@ gradient 로 최적화하고, λ 를 훑어 (토큰 수, KL) 곡선을 얻는다
 |---|---|
 | `llava_hooks.py` | 모델 로드, 입력 임베딩 + visual span 추출, attention bias 패치, 삭제 forward, 답 분포 비교 |
 | `stage0_equivalence.py` | **0단계**: bias 마스킹 ≈ 실제 삭제 등가성 검증, position 관례 비교, fwd+bwd 비용 측정 |
+| `stage1_mask_opt.py` | **1단계**: 비디오(·질문)별 λ sweep 마스크 최적화 → (\|S\|, KL) 곡선 + 실제 삭제 재검증 + 기준선 |
 
 ## 0단계 실행
 
@@ -57,7 +58,25 @@ python oracle/stage0_equivalence.py --pretrained lmms-lab/llava-onevision-qwen2-
   패치가 각 layer 의 `rotary_emb.forward` 를 감싸 테이블을 `max(position)+1` 까지 만들게 한다.
 - flash-attn 은 임의 bias 를 받지 못하므로 sdpa 또는 eager 만 사용한다.
 
+## 1단계 실행
+
+```bash
+# 파이프라인 확인 (0.5B, 비디오 2개)
+python oracle/stage1_mask_opt.py --pretrained lmms-lab/llava-onevision-qwen2-0.5b-ov --mode agnostic --limit 2
+# 파일럿 (7B, 비디오 100개, 질문 모름 = 비디오당 마스크 하나)
+python oracle/stage1_mask_opt.py --pretrained lmms-lab/llava-onevision-qwen2-7b-ov --mode agnostic --limit 100 --resume
+# 질문별 마스크 (같은 비디오, 비교용)
+python oracle/stage1_mask_opt.py --pretrained lmms-lab/llava-onevision-qwen2-7b-ov --mode aware --limit 100 --resume
+```
+
+- 데이터: Video-MME 로컬 비디오 145개 × 그 비디오의 질문 전부(3개, `task_type` 라벨). 새로 받을 것 없음.
+- 비디오마다 λ 6개 × (150 + 5×60) step. 기본 `--q_per_step 1` 은 step 마다 질문 하나를 돌아가며 써서
+  agnostic 의 비용을 aware 와 같게 맞춘다. 0단계 timing 의 s/step × 450 이 비디오당 최적화 시간.
+- 출력 `results/stage1_<model>_<mode>/<videoID>.json`: λ 점마다 `n_keep`, oracle(실제 삭제) KL·full 과 답 일치율·정확도,
+  같은 개수의 random / frame_uniform / grid 기준선 KL. `masks_<videoID>.npz` 에 soft 마스크와 0/1 마스크.
+- `--resume` 로 중단 지점부터 이어서.
+
 ## 다음 단계 (예정)
 
-- `stage1_mask_opt.py`: λ sweep 으로 비디오·질문별 (|S|, KL) 곡선, hard threshold 후 실제 삭제 재검증.
-- 기준선: random / pooling / attention top-k / 유사도 병합을 같은 fidelity 잣대로.
+- 곡선 집계·그림: 비디오별 (|S|, KL) 곡선, task_type 별 최소 충분 예산, oracle vs 기준선 간격, aware vs agnostic 간격.
+- attention top-k / 유사도 병합 기준선 추가. nested 검정(λ 간 S 포함 관계), seed 안정성.
