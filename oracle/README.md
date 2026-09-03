@@ -47,6 +47,9 @@ python oracle/stage0_equivalence.py --pretrained lmms-lab/llava-onevision-qwen2-
   LLaVA-OV 는 `mm_newline_position=one_token` 이라 구간 끝에 `image_newline` 1개가 붙고, 이건 항상 유지한다.
 - 마스크 단위는 `get_2dPool` 이후 토큰(프레임당 196 = 2×2 patch 묶음)이다. pooling 이전에 걸면
   pooling 이 가린 patch 와 안 가린 patch 를 섞어 "지운다"의 의미가 깨진다.
+- transformers 4.40 의 Qwen2 는 RoPE cos/sin 테이블을 kv_seq_len 까지만 잘라 `cos[position_ids]` 로 인덱싱한다.
+  "삭제 후 position 유지"는 position id 가 시퀀스 길이보다 크므로 그대로 두면 CUDA index-out-of-bounds 가 난다.
+  패치가 각 layer 의 `rotary_emb.forward` 를 감싸 테이블을 `max(position)+1` 까지 만들게 한다.
 - flash-attn 은 임의 bias 를 받지 못하므로 sdpa 또는 eager 만 사용한다.
 
 ## 다음 단계 (예정)

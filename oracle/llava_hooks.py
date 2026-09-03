@@ -108,6 +108,7 @@ def encode_video_inputs(model, image_processor, frames, input_ids: torch.Tensor)
 # ----------------------------------------------------------------------------
 class _BiasState:
     bias: Optional[torch.Tensor] = None   # (1,1,1,L) — key 축 additive bias, 모든 query 공통
+    rope_len: Optional[int] = None        # position_ids.max()+1 — RoPE 테이블을 이 길이까지 만들게 함
 
 
 _STATE = _BiasState()
@@ -115,7 +116,14 @@ _PATCHED = {}
 
 
 def install_bias_patch(model):
-    """모델이 실제로 쓰는 attention 클래스 하나만 패치한다 (중복 적용 방지)."""
+    """모델이 실제로 쓰는 attention 클래스 하나만 패치한다 (중복 적용 방지).
+
+    두 가지를 처리한다.
+    (a) visual bias: 4D attention mask 에 key 축 bias 를 더한다.
+    (b) RoPE 길이: transformers 4.40 의 Qwen2 는 cos/sin 테이블을 kv_seq_len 까지만 잘라서
+        cos[position_ids] 로 인덱싱한다. "삭제 후 position 유지" 처럼 position id 가 시퀀스
+        길이보다 크면 index out of bounds 가 나므로, 테이블을 max(position)+1 까지 만들게 한다.
+    """
     attn_cls = type(model.model.layers[0].self_attn)
     if attn_cls in _PATCHED:
         return attn_cls
@@ -135,9 +143,26 @@ def install_bias_patch(model):
                 attention_mask = causal[None, None].expand(bsz, 1, q_len, q_len)
             kv = attention_mask.shape[-1]
             attention_mask = attention_mask + b[..., :kv].to(attention_mask.dtype)
-        return orig(self, hidden_states, attention_mask=attention_mask, position_ids=position_ids,
-                    past_key_value=past_key_value, output_attentions=output_attentions,
-                    use_cache=use_cache, **kw)
+
+        rope = self.rotary_emb
+        need = _STATE.rope_len
+        if need is None and position_ids is not None:
+            # (gradient checkpointing 재계산처럼 _STATE 가 비어 있을 때도 안전하도록 직접 계산)
+            need = int(position_ids.max()) + 1
+        if need is not None and need > hidden_states.shape[1]:
+            orig_rot = rope.forward
+
+            def rot_forward(x, seq_len=None, _orig=orig_rot, _need=need):
+                return _orig(x, seq_len=max(seq_len or 0, _need))
+
+            rope.forward = rot_forward
+        try:
+            return orig(self, hidden_states, attention_mask=attention_mask, position_ids=position_ids,
+                        past_key_value=past_key_value, output_attentions=output_attentions,
+                        use_cache=use_cache, **kw)
+        finally:
+            if need is not None and need > hidden_states.shape[1]:
+                del rope.forward   # 인스턴스 속성 제거 → 클래스 forward 로 복귀
 
     attn_cls.forward = forward
     _PATCHED[attn_cls] = orig
@@ -162,6 +187,7 @@ def last_logits(model, embeds: torch.Tensor, position_ids: Optional[torch.Tensor
                 bias: Optional[torch.Tensor] = None) -> torch.Tensor:
     """마지막 위치의 vocab logits (float32, (vocab,)). bias 가 있으면 그 forward 동안만 적용."""
     _STATE.bias = bias
+    _STATE.rope_len = None if position_ids is None else int(position_ids.max()) + 1
     try:
         out = model.model(
             inputs_embeds=embeds[None],
@@ -172,6 +198,7 @@ def last_logits(model, embeds: torch.Tensor, position_ids: Optional[torch.Tensor
         return model.lm_head(h)[0].float()
     finally:
         _STATE.bias = None
+        _STATE.rope_len = None
 
 
 def delete_tokens(vi: VideoInputs, keep: torch.Tensor, renumber: bool):
