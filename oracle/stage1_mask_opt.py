@@ -223,9 +223,10 @@ def main():
     ap.add_argument("--mode", default="agnostic", choices=["agnostic", "aware"])
     ap.add_argument("--limit", type=int, default=None, help="비디오 수 제한")
     ap.add_argument("--num_frames", type=int, default=32)
-    ap.add_argument("--lambdas", default="0.03,0.1,0.3,1,3,10")
+    ap.add_argument("--lambdas", default="0.001,0.003,0.01,0.03,0.1,0.3,1,3",
+                    help="0.5B 파일럿: λ=0.03 에서 이미 keep 6% 라 10~50% 구간을 덮으려면 1e-3 부터")
     ap.add_argument("--steps_first", type=int, default=150)
-    ap.add_argument("--steps_next", type=int, default=60)
+    ap.add_argument("--steps_next", type=int, default=50)
     ap.add_argument("--lr", type=float, default=0.1)
     ap.add_argument("--q_per_step", type=int, default=1, help="step 당 질문 수 (round-robin). 0 = 전부")
     ap.add_argument("--tau_start", type=float, default=1.0)

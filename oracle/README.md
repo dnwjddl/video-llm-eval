@@ -75,7 +75,7 @@ python oracle/stage1_mask_opt.py --pretrained lmms-lab/llava-onevision-qwen2-7b-
 ```
 
 - 데이터: Video-MME 로컬 비디오 145개 × 그 비디오의 질문 전부(3개, `task_type` 라벨). 새로 받을 것 없음.
-- 비디오마다 λ 6개 × (150 + 5×60) step. 기본 `--q_per_step 1` 은 step 마다 질문 하나를 돌아가며 써서
+- 비디오마다 λ 8개 × (150 + 7×50) = 500 step. (0.5B 파일럿: λ=0.03 에서 이미 keep 6%, 51토큰(0.8%)에서도 답 유지 → λ 를 1e-3 부터.) 기본 `--q_per_step 1` 은 step 마다 질문 하나를 돌아가며 써서
   agnostic 의 비용을 aware 와 같게 맞춘다. 0단계 timing 의 s/step × 450 이 비디오당 최적화 시간.
 - 출력 `results/stage1_<model>_<mode>/<videoID>.json`: λ 점마다 `n_keep`, oracle(실제 삭제) KL·full 과 답 일치율·정확도,
   같은 개수의 random / frame_uniform / grid 기준선 KL. `masks_<videoID>.npz` 에 soft 마스크와 0/1 마스크.
