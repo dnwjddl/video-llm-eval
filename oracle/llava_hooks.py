@@ -183,9 +183,18 @@ def make_bias(vi: VideoInputs, m: torch.Tensor) -> torch.Tensor:
 # ----------------------------------------------------------------------------
 # Forward 유틸
 # ----------------------------------------------------------------------------
+def clear_state():
+    _STATE.bias = None
+    _STATE.rope_len = None
+
+
 def last_logits(model, embeds: torch.Tensor, position_ids: Optional[torch.Tensor] = None,
-                bias: Optional[torch.Tensor] = None) -> torch.Tensor:
-    """마지막 위치의 vocab logits (float32, (vocab,)). bias 가 있으면 그 forward 동안만 적용."""
+                bias: Optional[torch.Tensor] = None, clear: bool = True) -> torch.Tensor:
+    """마지막 위치의 vocab logits (float32, (vocab,)). bias 가 있으면 그 forward 동안 적용.
+
+    clear=False 이면 forward 후에도 state 를 남긴다. gradient checkpointing 은 backward 때
+    layer forward 를 재실행하므로, 그때도 같은 bias 가 보여야 한다 → backward 후 clear_state() 호출.
+    """
     _STATE.bias = bias
     _STATE.rope_len = None if position_ids is None else int(position_ids.max()) + 1
     try:
@@ -197,8 +206,23 @@ def last_logits(model, embeds: torch.Tensor, position_ids: Optional[torch.Tensor
         h = out.last_hidden_state[:, -1]
         return model.lm_head(h)[0].float()
     finally:
-        _STATE.bias = None
-        _STATE.rope_len = None
+        if clear:
+            clear_state()
+
+
+class math_sdpa:
+    """SDPA 를 math 백엔드로 강제하는 컨텍스트 — bf16 커널 차이(잡음 바닥) 측정용."""
+
+    def __enter__(self):
+        try:
+            from torch.nn.attention import SDPBackend, sdpa_kernel
+            self._cm = sdpa_kernel(SDPBackend.MATH)
+        except Exception:
+            self._cm = torch.backends.cuda.sdp_kernel(enable_flash=False, enable_mem_efficient=False, enable_math=True)
+        return self._cm.__enter__()
+
+    def __exit__(self, *a):
+        return self._cm.__exit__(*a)
 
 
 def delete_tokens(vi: VideoInputs, keep: torch.Tensor, renumber: bool):

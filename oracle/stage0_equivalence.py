@@ -20,6 +20,7 @@
 """
 
 import argparse
+import contextlib
 import json
 import os
 import sys
@@ -33,8 +34,8 @@ import torch  # noqa: E402
 import torch.nn.functional as F  # noqa: E402
 
 from llava_hooks import (  # noqa: E402
-    build_prompt_ids, compare, delete_tokens, encode_video_inputs, install_bias_patch,
-    last_logits, letter_dist, letter_token_ids, letters_in_prompt, load_llava, make_bias,
+    build_prompt_ids, clear_state, compare, delete_tokens, encode_video_inputs, install_bias_patch,
+    last_logits, letter_dist, letter_token_ids, letters_in_prompt, load_llava, make_bias, math_sdpa,
 )
 
 
@@ -74,6 +75,9 @@ def main():
     ap.add_argument("--attn_impl", default="sdpa", choices=["sdpa", "eager"])
     ap.add_argument("--timing", action="store_true", help="연속 마스크 fwd+bwd 비용 측정")
     ap.add_argument("--timing_steps", type=int, default=3)
+    ap.add_argument("--kernel", default="math", choices=["math", "default"],
+                    help="등가성 비교에 쓸 SDPA 백엔드. math = 모든 경로가 같은 커널을 쓰므로 순수 마스크 의미 차이만 남음")
+    ap.add_argument("--no_checkpoint", action="store_true", help="timing 에서 gradient checkpointing 끄기 (메모리 여유 있을 때)")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
@@ -108,14 +112,21 @@ def main():
                   f"({vi.n_frames} frames × {vi.n_vis // vi.n_frames}), newline={vi.has_newline}, letters={letters}",
                   flush=True)
 
+        kctx = math_sdpa() if args.kernel == "math" else contextlib.nullcontext()
         with torch.no_grad():
-            full = last_logits(model, vi.embeds)
+            # 잡음 바닥: 같은 입력을 기본 커널과 math 커널로 — bf16 커널 차이만으로 logit 이 얼마나 흔들리는가
+            full_default = last_logits(model, vi.embeds)
+            with math_sdpa():
+                full_math = last_logits(model, vi.embeds)
+            full = full_math if args.kernel == "math" else full_default
+        with torch.no_grad(), kctx:
             # 무마스크 bias(전부 0)가 full 과 같은지 — 패치 자체의 무해성 검사
             bias0 = make_bias(vi, torch.ones(vi.n_vis, device=model.device))
             full_bias0 = last_logits(model, vi.embeds, bias=bias0)
             rec = {"videoID": row["videoID"], "L": vi.L, "n_vis": vi.n_vis,
                    "full_argmax_letter": letters[int(letter_dist(full, lid).argmax())],
                    "gt": str(row.get("answer", "")).strip().strip("()").upper()[:1],
+                   "noise_floor_full_vs_math": compare(full_default, full_math, lid),
                    "full_vs_fullbias0": compare(full, full_bias0, lid), "conds": []}
 
             for ratio in keeps:
@@ -135,13 +146,16 @@ def main():
                          "bias_argmax_letter": letters[int(letter_dist(lb, lid).argmax())]}
                     rec["conds"].append(c)
         results.append(rec)
-        worst = max(c["bias_vs_del_keeppos"]["max_abs_dlogit_vocab"] for c in rec["conds"])
-        print(f"[{i + 1}/{len(rows)}] {row['videoID']}: max|Δlogit|(bias vs delete,keep-pos)={worst:.3e} "
-              f"| full-vs-bias0 {rec['full_vs_fullbias0']['max_abs_dlogit_vocab']:.3e}", flush=True)
+        w = max(rec["conds"], key=lambda c: c["bias_vs_del_keeppos"]["kl_letters"])["bias_vs_del_keeppos"]
+        nf = rec["noise_floor_full_vs_math"]
+        print(f"[{i + 1}/{len(rows)}] {row['videoID']}: bias-vs-delete(keep-pos) worst KL={w['kl_letters']:.2e} "
+              f"max|Δ|={w['max_abs_dlogit_vocab']:.2e} argmax={'ok' if all(c['bias_vs_del_keeppos']['same_argmax'] for c in rec['conds']) else 'DIFF'} "
+              f"| noise floor KL={nf['kl_letters']:.2e} max|Δ|={nf['max_abs_dlogit_vocab']:.2e} "
+              f"| bias0 KL={rec['full_vs_fullbias0']['kl_letters']:.2e}", flush=True)
 
         # ---- (3) 연속 마스크 fwd+bwd 비용 (첫 샘플에서만) ----
         if args.timing and timing is None:
-            timing = run_timing(model, vi, full, lid, args.timing_steps)
+            timing = run_timing(model, vi, full, lid, args.timing_steps, use_checkpoint=not args.no_checkpoint)
 
     # ---- 요약 ----
     flat = [c for r in results for c in r["conds"]]
@@ -161,9 +175,13 @@ def main():
     print(f"(2) bias vs 삭제(renumber):  max|Δlogit|={s['dlogit_vocab_max']:.3e}  KL(mean/max)={s['kl_mean']:.2e}/{s['kl_max']:.2e}  argmax 일치={s['argmax_agree']:.3f}")
     s = summary["full_vs_bias"]
     print(f"참고  full vs 무작위 마스크:  KL(mean/max)={s['kl_mean']:.2e}/{s['kl_max']:.2e}  argmax 일치={s['argmax_agree']:.3f}")
-    print("판정: (1)의 max|Δlogit| 이 bf16 잡음 수준(~1e-2 이하)이면 통과. (2)가 (1)보다 뚜렷이 크면 "
-          "LLaVA-OV 에서는 'position 유지' 관례를 기본으로 채택.")
-    if timing:
+    nf = summarize([{"a_vs_b": r["noise_floor_full_vs_math"]} for r in results], "a", "b")
+    print(f"잡음 바닥  full(default kernel) vs full(math kernel):  max|Δlogit|={nf['dlogit_vocab_max']:.3e}  KL(mean/max)={nf['kl_mean']:.2e}/{nf['kl_max']:.2e}  argmax 일치={nf['argmax_agree']:.3f}")
+    print(f"판정 (kernel={args.kernel}): (1)의 KL·max|Δlogit| 이 잡음 바닥과 같은 자릿수이고 argmax 가 거의 다 일치하면 통과. "
+          "kernel=math 이면 (1)은 이론상 정확히 0 에 가까워야 한다. (2)가 (1)보다 뚜렷이 크면 'position 유지' 관례를 기본으로 채택.")
+    if timing and timing["sec_per_step"] is None:
+        print(f"(3) fwd+bwd 측정 실패: {timing['note']}")
+    if timing and timing["sec_per_step"] is not None:
         print(f"(3) fwd+bwd  {timing['sec_per_step']:.2f} s/step, peak mem {timing['peak_mem_gb']:.1f} GB, "
               f"grad|θ| = {timing['grad_norm']:.3e} (0 이면 grad 가 안 흐르는 것)  [{timing['note']}]")
 
@@ -172,11 +190,12 @@ def main():
     print(f"saved: {out_path}")
 
 
-def run_timing(model, vi, full_logits, lid, steps):
+def run_timing(model, vi, full_logits, lid, steps, use_checkpoint=True):
     """θ (n_vis,) → m=sigmoid(θ) → bias=log m → KL(p_full ‖ p_m) 의 fwd+bwd 비용."""
-    note = "non-reentrant gradient checkpointing"
-    model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
-    model.train()  # HF 는 training 일 때만 checkpointing 을 적용 (Qwen2 dropout=0 이라 결과 동일)
+    note = "non-reentrant gradient checkpointing" if use_checkpoint else "no checkpointing"
+    if use_checkpoint:
+        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+        model.train()  # HF 는 training 일 때만 checkpointing 을 적용 (Qwen2 dropout=0 이라 결과 동일)
     p_full = letter_dist(full_logits, lid).detach()
     theta = torch.zeros(vi.n_vis, device=model.device, requires_grad=True)
     opt = torch.optim.Adam([theta], lr=0.1)
@@ -186,11 +205,13 @@ def run_timing(model, vi, full_logits, lid, steps):
         for s in range(steps):
             torch.cuda.synchronize(); t0 = time.perf_counter()
             m = torch.sigmoid(theta)
-            logits = last_logits(model, vi.embeds, bias=make_bias(vi, m))
+            # clear=False: checkpointing 의 backward 재계산에서도 같은 bias 가 보여야 한다
+            logits = last_logits(model, vi.embeds, bias=make_bias(vi, m), clear=False)
             p_m = letter_dist(logits, lid)
             loss = (p_full * (p_full.clamp_min(1e-12).log() - p_m.clamp_min(1e-12).log())).sum() + 0.1 * m.mean()
             opt.zero_grad(set_to_none=True)
             loss.backward()
+            clear_state()
             grad_norm = float(theta.grad.norm())
             opt.step()
             torch.cuda.synchronize(); times.append(time.perf_counter() - t0)
@@ -200,7 +221,9 @@ def run_timing(model, vi, full_logits, lid, steps):
         print(note, flush=True)
     finally:
         model.eval()
-        model.gradient_checkpointing_disable()
+        clear_state()
+        if use_checkpoint:
+            model.gradient_checkpointing_disable()
     peak = torch.cuda.max_memory_allocated() / 1e9
     return {"sec_per_step": (sum(times[1:]) / max(1, len(times) - 1)) if len(times) > 1 else (times[0] if times else None),
             "peak_mem_gb": peak, "grad_norm": grad_norm, "steps": len(times), "note": note}

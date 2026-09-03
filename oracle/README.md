@@ -29,8 +29,10 @@ python oracle/stage0_equivalence.py --pretrained lmms-lab/llava-onevision-qwen2-
 ### 무엇을 보나
 
 1. **패치 무해성**: bias 를 전부 0 으로 두고 돌린 logit 이 패치 없는 full 과 같아야 한다.
-2. **(1) bias vs 삭제(position 유지)**: `max|Δlogit|` 이 bf16 잡음 수준(대략 1e-2 이하)이고 KL 이 ~0 이면 통과.
-   여기서 차이가 크면 패치가 잘못된 것이므로 이후 단계로 가지 않는다.
+2. **(1) bias vs 삭제(position 유지)**: 기본값 `--kernel math` 에서는 모든 경로가 같은 SDPA 커널을 쓰므로
+   이 차이는 이론상 0 에 가까워야 한다 (KL ≪ 잡음 바닥, argmax 전부 일치). 함께 찍히는 "잡음 바닥"
+   (같은 full 입력을 기본 커널 vs math 커널로 돌린 차이)이 bf16 커널 차이의 크기다. `--kernel default` 로
+   돌리면 (1)에 그 커널 차이가 섞여 들어오므로 잡음 바닥과 같은 자릿수면 통과로 본다.
 3. **(2) bias vs 삭제(renumber)**: LLaVA-OV 는 1D RoPE 라 토큰을 지우면 뒤 토큰 위치가 밀린다.
    (2)가 (1)보다 뚜렷이 크면 "position 유지"를 기본 관례로 채택하고, 논문에서는 둘 다 보고.
 4. **(3) fwd+bwd 비용**: 7B 기준 step 시간과 peak 메모리. `grad|θ|` 가 0 이면 gradient 가 마스크까지
