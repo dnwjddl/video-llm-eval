@@ -30,10 +30,13 @@ def load_llava(pretrained: str, attn_impl: str = "sdpa", dtype: str = "bfloat16"
     """LLaVA-OneVision 로드 (단일 GPU). 모든 파라미터 requires_grad=False. dtype: bfloat16 | float32."""
     from llava.model.builder import load_pretrained_model
 
+    # LLaVA-NeXT builder 는 float16/bfloat16 만 받는다 (그 외는 pdb 로 떨어짐) → bf16 로 로드 후 승격
     tokenizer, model, image_processor, _ = load_pretrained_model(
         pretrained, None, "llava_qwen", device_map="cuda",
-        torch_dtype=dtype, attn_implementation=attn_impl,
+        torch_dtype="bfloat16", attn_implementation=attn_impl,
     )
+    if dtype == "float32":
+        model.float()
     model.eval()
     for p in model.parameters():
         p.requires_grad_(False)
