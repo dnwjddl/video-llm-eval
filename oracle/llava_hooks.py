@@ -110,12 +110,24 @@ def encode_video_inputs(model, image_processor, frames, input_ids: torch.Tensor)
 # Attention bias 패치
 # ----------------------------------------------------------------------------
 class _BiasState:
-    bias: Optional[torch.Tensor] = None   # (1,1,1,L) — key 축 additive bias, 모든 query 공통
+    bias: Optional[torch.Tensor] = None   # (1,1,1,L) — key 축 additive bias(log m), 모든 query 공통
     rope_len: Optional[int] = None        # position_ids.max()+1 — RoPE 테이블을 이 길이까지 만들게 함
+    impl: str = "keydim"                  # "keydim" | "bias" — bias 를 attention 에 넣는 방식
 
 
 _STATE = _BiasState()
 _PATCHED = {}
+
+
+def set_mask_impl(name: str):
+    """마스크 구현 선택.
+    keydim : q/k 에 차원을 덧붙여 q_extra·k_extra = log m_j 가 되게 한다. mask 가 필요 없어 is_causal
+             경로(flash/mem-efficient)를 그대로 쓰고, gradient 는 k 를 통해 m 으로 흐른다. (기본)
+    bias   : 4D attention mask 에 log m 을 더한다. 수학적으로 같지만 mask 에 gradient 가 필요해
+             구버전 PyTorch 의 mem-efficient backward 가 실패하고, math 커널은 L×L 행렬을 만들어 느리다.
+    """
+    assert name in ("keydim", "bias")
+    _STATE.impl = name
 
 
 def install_bias_patch(model):
@@ -135,6 +147,9 @@ def install_bias_patch(model):
     def forward(self, hidden_states, attention_mask=None, position_ids=None,
                 past_key_value=None, output_attentions=False, use_cache=False, **kw):
         b = _STATE.bias
+        if (b is not None and _STATE.impl == "keydim" and not output_attentions
+                and past_key_value is None and hidden_states.shape[0] == 1):
+            return _keydim_attention(self, hidden_states, attention_mask, position_ids, b)
         if b is not None:
             bsz, q_len, _ = hidden_states.shape
             if attention_mask is None:
@@ -170,6 +185,51 @@ def install_bias_patch(model):
     attn_cls.forward = forward
     _PATCHED[attn_cls] = orig
     return attn_cls
+
+
+def _keydim_attention(self, hidden_states, attention_mask, position_ids, bias):
+    """log m 을 mask 대신 key 의 추가 차원으로 넣는 attention (transformers 4.40 Qwen2 기준).
+
+    q_ext = [q·√(d_ext/d), 0…, √d_ext],  k_ext = [k, 0…, log m_j],  v_ext = [v, 0…]
+    SDPA 기본 scale 1/√d_ext 를 적용하면 logit = q·k/√d + log m_j 로 bias 방식과 정확히 같다.
+    d_ext 는 8 의 배수로 맞춰 flash / mem-efficient 커널 조건을 유지한다.
+    """
+    from transformers.models.qwen2.modeling_qwen2 import apply_rotary_pos_emb, repeat_kv
+
+    bsz, q_len, _ = hidden_states.size()
+    q = self.q_proj(hidden_states).view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
+    k = self.k_proj(hidden_states).view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+    v = self.v_proj(hidden_states).view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+    kv_len = k.shape[-2]
+    need = _STATE.rope_len or 0
+    if position_ids is not None and need == 0:
+        need = int(position_ids.max()) + 1
+    cos, sin = self.rotary_emb(v, seq_len=max(kv_len, need))
+    q, k = apply_rotary_pos_emb(q, k, cos, sin, position_ids)
+    k = repeat_kv(k, self.num_key_value_groups)
+    v = repeat_kv(v, self.num_key_value_groups)
+
+    d = self.head_dim
+    d_ext = ((d + 1 + 7) // 8) * 8
+    pad = d_ext - d
+    H = q.shape[1]
+    logm = bias[0, 0, 0, :kv_len].to(q.dtype).clamp_min(-1e4)          # m=0 → -1e4 (exp → 0)
+    q_ext = torch.cat([q * (d_ext / d) ** 0.5,
+                       q.new_zeros(bsz, H, q_len, pad - 1),
+                       q.new_full((bsz, H, q_len, 1), d_ext ** 0.5)], dim=-1)
+    k_ext = torch.cat([k, k.new_zeros(bsz, H, kv_len, pad - 1),
+                       logm.view(1, 1, kv_len, 1).expand(bsz, H, kv_len, 1)], dim=-1)
+    v_ext = torch.cat([v, v.new_zeros(bsz, H, kv_len, pad)], dim=-1)
+
+    if attention_mask is not None:
+        attention_mask = attention_mask[:, :, :, :kv_len]
+    out = torch.nn.functional.scaled_dot_product_attention(
+        q_ext.contiguous(), k_ext.contiguous(), v_ext.contiguous(),
+        attn_mask=attention_mask, dropout_p=0.0,
+        is_causal=(attention_mask is None and q_len > 1),
+    )
+    out = out[..., :d].transpose(1, 2).contiguous().view(bsz, q_len, self.hidden_size)
+    return self.o_proj(out), None, None
 
 
 def make_bias(vi: VideoInputs, m: torch.Tensor) -> torch.Tensor:
