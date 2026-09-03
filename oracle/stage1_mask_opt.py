@@ -280,6 +280,8 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out_dir", default=None)
     ap.add_argument("--resume", action="store_true", help="결과 JSON 이 있는 비디오는 건너뜀")
+    ap.add_argument("--reverse", action="store_true", help="비디오 목록을 뒤에서부터 처리 (다른 GPU 의 정방향 프로세스와 분담)")
+    ap.add_argument("--lock_ttl", type=float, default=3 * 3600, help="다른 프로세스가 작업 중인 비디오(.lock)를 건너뛰는 유효 시간(초)")
     args = ap.parse_args()
 
     from profile_latency import index_videos, read_frames
@@ -306,10 +308,16 @@ def main():
         print(f"[grad_kernel] {args.grad_kernel}", flush=True)
         json.dump(vars(args), open(os.path.join(out_dir, "_args.json"), "w"), indent=2)
 
-    for vi_i, vid in enumerate(vids):
+    order = list(reversed(vids)) if args.reverse else vids
+    for vi_i, vid in enumerate(order):
         out_json = os.path.join(out_dir, f"{vid}.json")
+        lock = out_json + ".lock"
         if args.resume and os.path.exists(out_json):
             continue
+        if os.path.exists(lock) and time.time() - os.path.getmtime(lock) < args.lock_ttl:
+            print(f"[skip] {vid}: 다른 프로세스가 작업 중 ({lock})", flush=True)
+            continue
+        open(lock, "w").write(f"{os.uname().nodename} pid={os.getpid()} {time.ctime()}\n")
         t_video = time.perf_counter()
         frames = read_frames(vindex[vid], args.num_frames)
 
@@ -385,6 +393,10 @@ def main():
         record["sec"] = time.perf_counter() - t_video
         json.dump(record, open(out_json, "w"), indent=2)
         np.savez_compressed(os.path.join(out_dir, f"masks_{vid}.npz"), **masks)
+        try:
+            os.remove(lock)
+        except OSError:
+            pass
         print(f"{'[' + vid + ']'} done in {record['sec']:.0f}s → {out_json}", flush=True)
 
 

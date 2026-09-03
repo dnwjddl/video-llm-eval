@@ -80,7 +80,9 @@ python oracle/stage1_mask_opt.py --pretrained lmms-lab/llava-onevision-qwen2-7b-
   agnostic 의 비용을 aware 와 같게 맞춘다. 0단계 timing 의 s/step × 450 이 비디오당 최적화 시간.
 - 출력 `results/stage1_<model>_<mode>/<videoID>.json`: λ 점마다 `n_keep`, oracle(실제 삭제) KL·full 과 답 일치율·정확도,
   같은 개수의 random / frame_uniform / grid 기준선 KL. `masks_<videoID>.npz` 에 soft 마스크와 0/1 마스크.
-- `--resume` 로 중단 지점부터 이어서.
+- `--resume` 로 중단 지점부터 이어서. 같은 결과 디렉터리에 GPU 를 더 붙이려면 새 프로세스에 `--reverse` 를 주면
+  뒤에서부터 처리해 중간에서 만난다. 작업 중인 비디오는 `<vid>.json.lock` 으로 표시되어 다른 프로세스가 건너뛴다
+  (프로세스가 죽어 락이 남으면 `--lock_ttl` 3시간 뒤 무시됨, 또는 수동 삭제).
 - **`--verifier`**: `letters`(기본) 는 객관식 글자 분포 KL — 정보량이 2 bit 라 0.5B 에서 51 토큰(0.8%)으로도 답이 유지됐다.
   `caption` 은 전체 토큰으로 생성한 비디오 설명(`--caption_tokens 96`)을 teacher-forcing 한 토큰별 full-vocab KL —
   "모델의 이해가 보존되는 최소 subset" 에 가깝고 질문 라벨이 필요 없다. agnostic 에 권장. `both` 는 둘 다.
