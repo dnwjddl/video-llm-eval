@@ -43,7 +43,7 @@ import torch  # noqa: E402
 
 from llava_hooks import (  # noqa: E402
     build_prompt_ids, clear_state, delete_tokens, encode_video_inputs, install_bias_patch,
-    last_logits, letter_dist, letter_token_ids, letters_in_prompt, load_llava, make_bias, math_sdpa,
+    last_logits, letter_dist, letter_token_ids, letters_in_prompt, load_llava, make_bias, math_sdpa, set_mask_impl,
 )
 
 
@@ -235,7 +235,8 @@ def main():
     ap.add_argument("--attn_impl", default="sdpa", choices=["sdpa", "eager"])
     ap.add_argument("--grad_kernel", default="auto", choices=["auto", "math", "default"],
                     help="auto = 첫 비디오에서 default(mem-efficient) fwd+bwd 를 시험하고 실패하면 math 로")
-    ap.add_argument("--pad_multiple", type=int, default=64)
+    ap.add_argument("--pad_multiple", type=int, default=0)
+    ap.add_argument("--mask_impl", default="keydim", choices=["keydim", "bias"])
     ap.add_argument("--no_checkpoint", action="store_true")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out_dir", default=None)
@@ -259,6 +260,7 @@ def main():
     print("loading model...", flush=True)
     tokenizer, model, image_processor = load_llava(args.pretrained, args.attn_impl)
     install_bias_patch(model)
+    set_mask_impl(args.mask_impl)
     baselines = [b for b in args.baselines.split(",") if b]
     if args.grad_kernel == "auto":
         args.grad_kernel = probe_grad_kernel(model, image_processor, tokenizer, read_frames, vindex, groups, vids, args)

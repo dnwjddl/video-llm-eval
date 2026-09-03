@@ -38,6 +38,9 @@ python oracle/stage0_equivalence.py --pretrained lmms-lab/llava-onevision-qwen2-
    (2)가 (1)보다 뚜렷이 크면 "position 유지"를 기본 관례로 채택하고, 논문에서는 둘 다 보고.
 3-1. **fp32 확정 실험**: `--dtype float32` (0.5B) 로 돌리면 (1)이 ~1e-6 수준으로 떨어져야 한다. 그러면 bf16 에서
    남는 1e-3 KL 은 softmax 누적 반올림(가린 경로는 6,380 key 위에서, 삭제 경로는 짧은 시퀀스에서 정규화)임이 확정된다.
+3-2. **keydim 구현 vs bias 구현**: 기본 마스크 구현은 `keydim` (q/k 에 차원을 덧붙여 q_extra·k_extra = log m_j).
+   mask 가 필요 없어 is_causal 경로(flash)를 그대로 쓰고 gradient 는 k 로 흐른다. (1)은 keydim, (1')은 bias 구현이며
+   둘 다 삭제와 같아야 하고, 둘 사이 차이는 잡음 바닥 수준이어야 한다.
 4. **(3) fwd+bwd 비용**: gradient 경로는 `--grad_kernel auto` 가 기본. memory-efficient SDPA 를 먼저 시도하고
    (구버전 PyTorch 의 `LSE is not correctly aligned` 오류를 피하려고 시퀀스를 `--pad_multiple 64` 로 padding),
    실패하면 math 로 떨어진다. math 는 6.4k×6.4k attention 을 실제로 만들어 0.5B 에서도 2.6 s/step 이라

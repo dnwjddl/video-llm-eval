@@ -35,7 +35,7 @@ import torch.nn.functional as F  # noqa: E402
 
 from llava_hooks import (  # noqa: E402
     build_prompt_ids, clear_state, compare, delete_tokens, encode_video_inputs, install_bias_patch,
-    last_logits, letter_dist, letter_token_ids, letters_in_prompt, load_llava, make_bias, math_sdpa,
+    last_logits, letter_dist, letter_token_ids, letters_in_prompt, load_llava, make_bias, math_sdpa, set_mask_impl,
 )
 
 
@@ -77,7 +77,9 @@ def main():
                     help="float32 로 돌리면 (1)의 잔차가 bf16 반올림인지 확정할 수 있다 (0.5B 권장)")
     ap.add_argument("--grad_kernel", default="auto", choices=["auto", "math", "default"],
                     help="timing(fwd+bwd) 의 SDPA 백엔드. auto = default(mem-efficient, 시퀀스 padding 적용) 시도 후 실패하면 math")
-    ap.add_argument("--pad_multiple", type=int, default=64, help="grad 경로에서 시퀀스 길이를 이 배수로 padding (LSE 정렬 오류 회피)")
+    ap.add_argument("--pad_multiple", type=int, default=0, help="grad 경로에서 시퀀스 길이를 이 배수로 padding (bias 구현의 LSE 정렬 오류 회피용; keydim 에선 불필요)")
+    ap.add_argument("--mask_impl", default="keydim", choices=["keydim", "bias"],
+                    help="timing 에 쓸 마스크 구현. keydim = q/k 추가 차원 (mask 불필요, flash 가능), bias = 4D mask 에 log m")
     ap.add_argument("--timing", action="store_true", help="연속 마스크 fwd+bwd 비용 측정")
     ap.add_argument("--timing_steps", type=int, default=3)
     ap.add_argument("--kernel", default="math", choices=["math", "default"],
@@ -95,6 +97,7 @@ def main():
     print("loading model...", flush=True)
     tokenizer, model, image_processor = load_llava(args.pretrained, args.attn_impl, args.dtype)
     attn_cls = install_bias_patch(model)
+    set_mask_impl(args.mask_impl)
     print(f"[patch] {attn_cls.__name__}.forward 에 visual bias 훅 설치", flush=True)
 
     samples = load_samples("videomme", 50, 42)
@@ -138,13 +141,19 @@ def main():
                 for mode in ("token", "frame"):
                     keep = random_keep(vi.n_vis, vi.n_frames, ratio, gen, mode)
                     m = keep.float().to(model.device)
-                    lb = last_logits(model, vi.embeds, bias=make_bias(vi, m))
+                    set_mask_impl("keydim")
+                    lb = last_logits(model, vi.embeds, bias=make_bias(vi, m))      # keydim 구현
+                    set_mask_impl("bias")
+                    lb_b = last_logits(model, vi.embeds, bias=make_bias(vi, m))    # bias 구현
+                    set_mask_impl(args.mask_impl)
                     e_k, p_k = delete_tokens(vi, keep, renumber=False)
                     ld_keep = last_logits(model, e_k, position_ids=p_k)
                     e_r, p_r = delete_tokens(vi, keep, renumber=True)
                     ld_ren = last_logits(model, e_r, position_ids=p_r)
                     c = {"ratio": ratio, "mode": mode, "n_kept": int(keep.sum()),
-                         "bias_vs_del_keeppos": compare(lb, ld_keep, lid),
+                         "bias_vs_del_keeppos": compare(lb, ld_keep, lid),          # (keydim 구현)
+                         "biasimpl_vs_del_keeppos": compare(lb_b, ld_keep, lid),    # (bias 구현)
+                         "keydim_vs_biasimpl": compare(lb, lb_b, lid),
                          "bias_vs_del_renumber": compare(lb, ld_ren, lid),
                          "del_keeppos_vs_del_renumber": compare(ld_keep, ld_ren, lid),
                          "full_vs_bias": compare(full, lb, lid),
@@ -166,7 +175,7 @@ def main():
                 with gctx:
                     timing = run_timing(model, vi, full, lid, args.timing_steps,
                                         use_checkpoint=not args.no_checkpoint, pad_multiple=args.pad_multiple)
-                timing["note"] += f" | grad_kernel={gk} pad_multiple={args.pad_multiple}"
+                timing["note"] += f" | mask_impl={args.mask_impl} grad_kernel={gk} pad_multiple={args.pad_multiple}"
                 if timing["sec_per_step"] is not None:
                     break
                 print(f"[timing] kernel={gk} 실패 → 다음 후보", flush=True)
@@ -177,6 +186,8 @@ def main():
         "n_samples": len(results),
         "full_vs_fullbias0_dlogit_max": max(r["full_vs_fullbias0"]["max_abs_dlogit_vocab"] for r in results),
         "bias_vs_del_keeppos": summarize(flat, "bias", "del_keeppos"),
+        "biasimpl_vs_del_keeppos": summarize(flat, "biasimpl", "del_keeppos"),
+        "keydim_vs_biasimpl": summarize(flat, "keydim", "biasimpl"),
         "bias_vs_del_renumber": summarize(flat, "bias", "del_renumber"),
         "del_keeppos_vs_del_renumber": summarize(flat, "del_keeppos", "del_renumber"),
         "full_vs_bias": summarize(flat, "full", "bias"),
@@ -184,7 +195,11 @@ def main():
     print("\n===== Stage 0 summary =====")
     print(f"패치 무해성  full vs bias(all 0):      max|Δlogit| = {summary['full_vs_fullbias0_dlogit_max']:.3e}")
     s = summary["bias_vs_del_keeppos"]
-    print(f"(1) bias vs 삭제(pos 유지):  max|Δlogit|={s['dlogit_vocab_max']:.3e}  KL(mean/max)={s['kl_mean']:.2e}/{s['kl_max']:.2e}  argmax 일치={s['argmax_agree']:.3f}")
+    print(f"(1) keydim 구현 vs 삭제(pos 유지): max|Δlogit|={s['dlogit_vocab_max']:.3e}  KL(mean/max)={s['kl_mean']:.2e}/{s['kl_max']:.2e}  argmax 일치={s['argmax_agree']:.3f}")
+    s = summary["biasimpl_vs_del_keeppos"]
+    print(f"(1') bias 구현 vs 삭제(pos 유지):  max|Δlogit|={s['dlogit_vocab_max']:.3e}  KL(mean/max)={s['kl_mean']:.2e}/{s['kl_max']:.2e}  argmax 일치={s['argmax_agree']:.3f}")
+    s = summary["keydim_vs_biasimpl"]
+    print(f"     keydim 구현 vs bias 구현:      max|Δlogit|={s['dlogit_vocab_max']:.3e}  KL(mean/max)={s['kl_mean']:.2e}/{s['kl_max']:.2e}  argmax 일치={s['argmax_agree']:.3f}")
     s = summary["bias_vs_del_renumber"]
     print(f"(2) bias vs 삭제(renumber):  max|Δlogit|={s['dlogit_vocab_max']:.3e}  KL(mean/max)={s['kl_mean']:.2e}/{s['kl_max']:.2e}  argmax 일치={s['argmax_agree']:.3f}")
     s = summary["full_vs_bias"]
