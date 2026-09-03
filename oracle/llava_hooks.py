@@ -192,12 +192,25 @@ def clear_state():
 
 
 def last_logits(model, embeds: torch.Tensor, position_ids: Optional[torch.Tensor] = None,
-                bias: Optional[torch.Tensor] = None, clear: bool = True) -> torch.Tensor:
-    """마지막 위치의 vocab logits (float32, (vocab,)). bias 가 있으면 그 forward 동안 적용.
+                bias: Optional[torch.Tensor] = None, clear: bool = True, pad_multiple: int = 0) -> torch.Tensor:
+    """마지막 실제 위치의 vocab logits (float32, (vocab,)). bias 가 있으면 그 forward 동안 적용.
 
     clear=False 이면 forward 후에도 state 를 남긴다. gradient checkpointing 은 backward 때
     layer forward 를 재실행하므로, 그때도 같은 bias 가 보여야 한다 → backward 후 clear_state() 호출.
+
+    pad_multiple>0 이면 시퀀스 끝에 0 임베딩을 붙여 길이를 그 배수로 맞춘다. causal 이라 뒤에 붙은
+    토큰은 실제 토큰의 출력에 영향이 없다. 구버전 PyTorch 의 memory-efficient SDPA 는 float mask 의
+    backward 에서 길이가 32 의 배수가 아니면 'LSE is not correctly aligned' 를 내므로 그 회피용.
     """
+    L = embeds.shape[0]
+    pad = (-L) % pad_multiple if pad_multiple else 0
+    if pad:
+        embeds = torch.cat([embeds, embeds.new_zeros(pad, embeds.shape[1])], dim=0)
+        if position_ids is not None:
+            start = int(position_ids.max()) + 1
+            position_ids = torch.cat([position_ids, torch.arange(start, start + pad, device=position_ids.device)])
+        if bias is not None:
+            bias = torch.cat([bias, bias.new_zeros(1, 1, 1, pad)], dim=-1)
     _STATE.bias = bias
     _STATE.rope_len = None if position_ids is None else int(position_ids.max()) + 1
     try:
@@ -206,7 +219,7 @@ def last_logits(model, embeds: torch.Tensor, position_ids: Optional[torch.Tensor
             position_ids=None if position_ids is None else position_ids[None],
             use_cache=False, return_dict=True,
         )
-        h = out.last_hidden_state[:, -1]
+        h = out.last_hidden_state[:, L - 1]
         return model.lm_head(h)[0].float()
     finally:
         if clear:

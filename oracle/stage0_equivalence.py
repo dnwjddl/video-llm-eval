@@ -75,8 +75,9 @@ def main():
     ap.add_argument("--attn_impl", default="sdpa", choices=["sdpa", "eager"])
     ap.add_argument("--dtype", default="bfloat16", choices=["bfloat16", "float32"],
                     help="float32 로 돌리면 (1)의 잔차가 bf16 반올림인지 확정할 수 있다 (0.5B 권장)")
-    ap.add_argument("--grad_kernel", default="math", choices=["math", "default"],
-                    help="timing(fwd+bwd) 에 쓸 SDPA 백엔드. mem-efficient 는 float mask backward 에서 정렬 오류(LSE strideH)가 나므로 math 기본")
+    ap.add_argument("--grad_kernel", default="auto", choices=["auto", "math", "default"],
+                    help="timing(fwd+bwd) 의 SDPA 백엔드. auto = default(mem-efficient, 시퀀스 padding 적용) 시도 후 실패하면 math")
+    ap.add_argument("--pad_multiple", type=int, default=64, help="grad 경로에서 시퀀스 길이를 이 배수로 padding (LSE 정렬 오류 회피)")
     ap.add_argument("--timing", action="store_true", help="연속 마스크 fwd+bwd 비용 측정")
     ap.add_argument("--timing_steps", type=int, default=3)
     ap.add_argument("--kernel", default="math", choices=["math", "default"],
@@ -159,10 +160,16 @@ def main():
 
         # ---- (3) 연속 마스크 fwd+bwd 비용 (첫 샘플에서만) ----
         if args.timing and timing is None:
-            gctx = math_sdpa() if args.grad_kernel == "math" else contextlib.nullcontext()
-            with gctx:
-                timing = run_timing(model, vi, full, lid, args.timing_steps, use_checkpoint=not args.no_checkpoint)
-            timing["note"] += f" | grad_kernel={args.grad_kernel}"
+            kernels = ["default", "math"] if args.grad_kernel == "auto" else [args.grad_kernel]
+            for gk in kernels:
+                gctx = math_sdpa() if gk == "math" else contextlib.nullcontext()
+                with gctx:
+                    timing = run_timing(model, vi, full, lid, args.timing_steps,
+                                        use_checkpoint=not args.no_checkpoint, pad_multiple=args.pad_multiple)
+                timing["note"] += f" | grad_kernel={gk} pad_multiple={args.pad_multiple}"
+                if timing["sec_per_step"] is not None:
+                    break
+                print(f"[timing] kernel={gk} 실패 → 다음 후보", flush=True)
 
     # ---- 요약 ----
     flat = [c for r in results for c in r["conds"]]
@@ -197,7 +204,7 @@ def main():
     print(f"saved: {out_path}")
 
 
-def run_timing(model, vi, full_logits, lid, steps, use_checkpoint=True):
+def run_timing(model, vi, full_logits, lid, steps, use_checkpoint=True, pad_multiple=0):
     """θ (n_vis,) → m=sigmoid(θ) → bias=log m → KL(p_full ‖ p_m) 의 fwd+bwd 비용."""
     note = "non-reentrant gradient checkpointing" if use_checkpoint else "no checkpointing"
     if use_checkpoint:
@@ -213,7 +220,7 @@ def run_timing(model, vi, full_logits, lid, steps, use_checkpoint=True):
             torch.cuda.synchronize(); t0 = time.perf_counter()
             m = torch.sigmoid(theta)
             # clear=False: checkpointing 의 backward 재계산에서도 같은 bias 가 보여야 한다
-            logits = last_logits(model, vi.embeds, bias=make_bias(vi, m), clear=False)
+            logits = last_logits(model, vi.embeds, bias=make_bias(vi, m), clear=False, pad_multiple=pad_multiple)
             p_m = letter_dist(logits, lid)
             loss = (p_full * (p_full.clamp_min(1e-12).log() - p_m.clamp_min(1e-12).log())).sum() + 0.1 * m.mean()
             opt.zero_grad(set_to_none=True)

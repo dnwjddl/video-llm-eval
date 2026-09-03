@@ -159,7 +159,7 @@ def optimize_mask(model, qs, args, log_prefix=""):
                     for q in batch:  # 질문별 fwd+bwd 를 순차로 누적 (메모리 절약)
                         m = torch.sigmoid(theta / tau)          # 질문마다 그래프를 새로 (backward 가 그래프를 해제하므로)
                         bias = make_bias(q["vi"], m)
-                        logits = last_logits(model, q["vi"].embeds, bias=bias, clear=False)
+                        logits = last_logits(model, q["vi"].embeds, bias=bias, clear=False, pad_multiple=args.pad_multiple)
                         p = letter_dist(logits, q["lid"])
                         pf = q["p_full"]
                         kl = (pf * (pf.clamp_min(1e-12).log() - p.clamp_min(1e-12).log())).sum()
@@ -187,6 +187,34 @@ def optimize_mask(model, qs, args, log_prefix=""):
     return results
 
 
+def probe_grad_kernel(model, image_processor, tokenizer, read_frames, vindex, groups, vids, args):
+    """첫 비디오·첫 질문으로 default 커널 fwd+bwd 를 한 번 시험. 실패하면 math."""
+    frames = read_frames(vindex[vids[0]], args.num_frames)
+    q = groups[vids[0]][0]
+    ids = build_prompt_ids(tokenizer, q["prompt"])
+    vi = encode_video_inputs(model, image_processor, frames, ids)
+    lid = letter_token_ids(tokenizer, letters_in_prompt(q["prompt"])).to(model.device)
+    theta = torch.zeros(vi.n_vis, device=model.device, requires_grad=True)
+    if not args.no_checkpoint:
+        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+        model.train()
+    try:
+        logits = last_logits(model, vi.embeds, bias=make_bias(vi, torch.sigmoid(theta)), clear=False,
+                             pad_multiple=args.pad_multiple)
+        letter_dist(logits, lid).sum().backward()
+        ok = theta.grad is not None
+        return "default" if ok else "math"
+    except RuntimeError as e:
+        print(f"[grad_kernel] default 실패: {str(e)[:120]} → math", flush=True)
+        return "math"
+    finally:
+        clear_state()
+        model.eval()
+        if not args.no_checkpoint:
+            model.gradient_checkpointing_disable()
+        torch.cuda.empty_cache()
+
+
 # ----------------------------------------------------------------------------
 def main():
     ap = argparse.ArgumentParser()
@@ -205,7 +233,9 @@ def main():
     ap.add_argument("--baselines", default="random,frame_uniform,grid")
     ap.add_argument("--baseline_seeds", type=int, default=2)
     ap.add_argument("--attn_impl", default="sdpa", choices=["sdpa", "eager"])
-    ap.add_argument("--grad_kernel", default="math", choices=["math", "default"])
+    ap.add_argument("--grad_kernel", default="auto", choices=["auto", "math", "default"],
+                    help="auto = 첫 비디오에서 default(mem-efficient) fwd+bwd 를 시험하고 실패하면 math 로")
+    ap.add_argument("--pad_multiple", type=int, default=64)
     ap.add_argument("--no_checkpoint", action="store_true")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out_dir", default=None)
@@ -230,6 +260,10 @@ def main():
     tokenizer, model, image_processor = load_llava(args.pretrained, args.attn_impl)
     install_bias_patch(model)
     baselines = [b for b in args.baselines.split(",") if b]
+    if args.grad_kernel == "auto":
+        args.grad_kernel = probe_grad_kernel(model, image_processor, tokenizer, read_frames, vindex, groups, vids, args)
+        print(f"[grad_kernel] {args.grad_kernel}", flush=True)
+        json.dump(vars(args), open(os.path.join(out_dir, "_args.json"), "w"), indent=2)
 
     for vi_i, vid in enumerate(vids):
         out_json = os.path.join(out_dir, f"{vid}.json")
